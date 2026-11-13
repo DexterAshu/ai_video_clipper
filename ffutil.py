@@ -1,0 +1,257 @@
+"""FFmpeg helpers: run with captured errors, probe, filter-path escaping.
+ALL AV operations in the project go through ffmpeg/ffprobe via this module."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+from errors import ClipForgeError
+from logutil import get_logger
+
+log = get_logger("ffmpeg")
+
+
+class FFmpegError(ClipForgeError):
+    stage = "ffmpeg"
+
+
+_bin_cache: dict[str, str] = {}
+
+
+def _config_binary(key: str) -> str | None:
+    """Read ffmpeg.<key> from config without hard-failing on config errors.
+    A relative path is resolved against the repo root so it works regardless
+    of the process CWD."""
+    try:
+        from config import ROOT, load_config
+        val = load_config(check_python=False).get("ffmpeg", {}).get(key)
+        if val and not Path(val).is_absolute():
+            resolved = ROOT / val
+            return str(resolved) if resolved.exists() else val
+        return val
+    except Exception:  # noqa: BLE001 — resolution must never crash a probe
+        return None
+
+
+def ffmpeg_bin() -> str:
+    """The ffmpeg executable the app uses. Resolution order:
+    CLIPFORGE_FFMPEG env → config `ffmpeg.binary` → `"ffmpeg"` (PATH).
+    This is the single knob for pointing at a driver-compatible build when the
+    system ffmpeg's NVENC SDK is newer than the installed NVIDIA driver."""
+    if "ffmpeg" not in _bin_cache:
+        _bin_cache["ffmpeg"] = (os.environ.get("CLIPFORGE_FFMPEG")
+                                or _config_binary("binary") or "ffmpeg")
+    return _bin_cache["ffmpeg"]
+
+
+def ffprobe_bin() -> str:
+    """ffprobe alongside ffmpeg_bin(): CLIPFORGE_FFPROBE env → config
+    `ffmpeg.ffprobe_binary` → the sibling of ffmpeg_bin() → `"ffprobe"`."""
+    if "ffprobe" not in _bin_cache:
+        env = os.environ.get("CLIPFORGE_FFPROBE") or _config_binary("ffprobe_binary")
+        if not env:
+            fm = ffmpeg_bin()
+            sib = Path(fm).with_name(Path(fm).name.replace("ffmpeg", "ffprobe"))
+            env = str(sib) if fm != "ffmpeg" and sib.exists() else "ffprobe"
+        _bin_cache["ffprobe"] = env
+    return _bin_cache["ffprobe"]
+
+
+def run_ffmpeg(args: list[str], timeout: int = 1800,
+               progress_label: str | None = None) -> None:
+    """Run ffmpeg -y -v error <args>; raise FFmpegError with stderr tail.
+
+    With `progress_label`, ffmpeg's -progress stream is read live and an
+    out_time line is logged every ~30s so long re-encodes look alive
+    instead of hung."""
+    cmd = [ffmpeg_bin(), "-y", "-v", "error"] + [str(a) for a in args]
+    log.info("ffmpeg %s", " ".join(cmd[3:6]) + (" ..." if len(cmd) > 6 else ""))
+    try:
+        if progress_label:
+            _run_with_progress(cmd, timeout, progress_label)
+            return
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise FFmpegError(f"ffmpeg timed out after {timeout}s") from e
+    except FileNotFoundError as e:
+        raise FFmpegError("ffmpeg not found on PATH") from e
+    if r.returncode != 0:
+        raise FFmpegError(f"ffmpeg exited {r.returncode}",
+                          detail=(r.stderr or "")[-1000:])
+
+
+def _run_with_progress(cmd: list[str], timeout: int, label: str) -> None:
+    import time
+    # -progress pipe:1 emits key=value blocks; -stats_period throttles them.
+    # cmd is [bin, -y, -v, error, ...args] — split after index 4 so "-v error"
+    # stays an intact pair (splitting at 3 previously fed "-stats_period" to -v).
+    cmd = cmd[:4] + ["-stats_period", "30", "-progress", "pipe:1"] + cmd[4:]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + timeout
+    try:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            if time.monotonic() > deadline:
+                proc.kill()
+                raise FFmpegError(f"ffmpeg timed out after {timeout}s ({label})")
+            if line.startswith("out_time="):
+                log.info("%s: encoded up to %s", label, line.strip()[9:])
+        proc.wait(timeout=max(30, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as e:
+        proc.kill()
+        raise FFmpegError(f"ffmpeg timed out after {timeout}s ({label})") from e
+    if proc.returncode != 0:
+        stderr = proc.stderr.read() if proc.stderr else ""
+        raise FFmpegError(f"ffmpeg exited {proc.returncode}",
+                          detail=stderr[-1000:])
+
+
+def probe(path: str | Path) -> dict:
+    """ffprobe → {duration, width, height, fps, vcodec, acodec, has_audio}."""
+    cmd = [ffprobe_bin(), "-v", "error", "-print_format", "json",
+           "-show_format", "-show_streams", str(path)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise FFmpegError(f"ffprobe failed for {path}",
+                          detail=(r.stderr or "")[-500:])
+    data = json.loads(r.stdout)
+    v = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
+    a = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
+    if v is None:
+        raise FFmpegError(f"no video stream in {path}")
+    num, _, den = (v.get("avg_frame_rate") or "30/1").partition("/")
+    fps = (float(num) / float(den)) if den and float(den) else 30.0
+    if fps <= 0 or fps > 240:
+        fps = 30.0
+    return {
+        "duration": float(data["format"].get("duration", 0.0)),
+        "width": int(v["width"]),
+        "height": int(v["height"]),
+        "fps": fps,
+        "vcodec": v.get("codec_name", ""),
+        "pix_fmt": v.get("pix_fmt", ""),
+        "acodec": (a or {}).get("codec_name", ""),
+        "has_audio": a is not None,
+    }
+
+
+def probe_audio(path: str | Path) -> dict:
+    """ffprobe for an audio-only file (no video stream required) →
+    {duration, acodec, has_audio}. Use probe() for video/clip files; this is
+    for standalone audio inputs like a TTS voice reference wav."""
+    cmd = [ffprobe_bin(), "-v", "error", "-print_format", "json",
+           "-show_format", "-show_streams", str(path)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise FFmpegError(f"ffprobe failed for {path}",
+                          detail=(r.stderr or "")[-500:])
+    data = json.loads(r.stdout)
+    a = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
+    return {
+        "duration": float(data["format"].get("duration", 0.0)),
+        "acodec": (a or {}).get("codec_name", ""),
+        "has_audio": a is not None,
+    }
+
+
+def ffmpeg_version() -> str:
+    r = subprocess.run([ffmpeg_bin(), "-version"], capture_output=True, text=True,
+                       timeout=30)
+    first = (r.stdout or "").splitlines()[0] if r.stdout else ""
+    return first.split(" ")[2] if len(first.split(" ")) > 2 else "unknown"
+
+
+def verify_ffmpeg(cfg: dict) -> str:
+    """Verify ffmpeg exists and matches the pinned version (warn on drift
+    unless ffmpeg.require_exact)."""
+    ver = ffmpeg_version()
+    pinned = cfg.get("ffmpeg", {}).get("pinned_version", "")
+    if pinned and not ver.startswith(pinned):
+        msg = f"ffmpeg version drift: found {ver}, pinned {pinned}"
+        if cfg.get("ffmpeg", {}).get("require_exact"):
+            raise FFmpegError(msg)
+        log.warning(msg)
+    else:
+        log.info("ffmpeg %s OK (pinned %s)", ver, pinned or "none")
+    return ver
+
+
+_nvenc: bool | None = None
+
+
+def nvenc_available() -> bool:
+    """NVIDIA GPU present, ffmpeg built with h264_nvenc, AND the driver can
+    actually initialize it (cached). The compiled-in encoder list says
+    nothing about whether the installed driver meets NVENC's own minimum
+    version requirement — that only surfaces as a runtime "minimum required
+    Nvidia driver" error from ffmpeg, so a real 1-frame smoke encode is the
+    only reliable check. Falls back to libx264 when it can't, and logs the
+    SPECIFIC reason — never a bare "libx264 (CPU)" with no explanation."""
+    global _nvenc
+    if _nvenc is None:
+        _nvenc, reason = _probe_nvenc()
+        if _nvenc:
+            log.info("encoder: h264_nvenc (GPU)")
+        else:
+            log.warning("encoder: libx264 (CPU) — NVENC unavailable: %s", reason)
+    return _nvenc
+
+
+def _probe_nvenc() -> tuple[bool, str]:
+    """(available, reason). reason is empty when available, else the specific
+    cause: no GPU, encoder not compiled in, or the raw smoke-encode error."""
+    fm = ffmpeg_bin()
+    try:
+        if subprocess.run(["nvidia-smi", "-L"], capture_output=True,
+                          timeout=15).returncode != 0:
+            return False, "no NVIDIA GPU detected (nvidia-smi failed)"
+        if "h264_nvenc" not in subprocess.run(
+                [fm, "-hide_banner", "-encoders"], capture_output=True,
+                text=True, timeout=30).stdout:
+            return False, f"ffmpeg build has no h264_nvenc encoder ({fm})"
+        r = subprocess.run(
+            [fm, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=black:s=64x64", "-frames:v", "1",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            return True, ""
+        return False, "NVENC init failed: " + _nvenc_error(r.stderr or "")
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"probe error: {e}"
+
+
+# The actionable NVENC failure (driver too old, session limit, no capable HW)
+# is usually the FIRST stderr line; the rest is generic filtergraph teardown.
+_NVENC_HINT = ("driver", "nvenc", "minimum required", "api version",
+               "no capable devices", "session")
+
+
+def _nvenc_error(stderr: str) -> str:
+    hits = [ln.strip() for ln in stderr.splitlines()
+            if any(h in ln.lower() for h in _NVENC_HINT)]
+    return "; ".join(hits[:2]) if hits else (
+        " ".join(stderr.split())[:200] or "unknown error")
+
+
+def video_encode_args(cfg: dict, final: bool = False) -> list[str]:
+    """Encoder argument set: NVENC when config allows and hardware exists,
+    otherwise libx264 with the configured preset/crf."""
+    r = cfg["render"]
+    force_cpu = r.get("compute", "auto") == "cpu"
+    if (not force_cpu and r.get("use_nvenc", "auto") == "auto"
+            and nvenc_available()):
+        return ["-c:v", "h264_nvenc", "-preset", "p5" if final else "p3",
+                "-cq", str(r["crf"]), "-pix_fmt", "yuv420p"]
+    preset = r["preset_final"] if final else r["preset_intermediate"]
+    return ["-c:v", "libx264", "-preset", preset, "-crf", str(r["crf"]),
+            "-pix_fmt", "yuv420p"]
+
+
+def filter_path(p: str | Path) -> str:
+    """Escape a filesystem path for use inside an ffmpeg filter argument
+    (subtitles/ass/sendcmd filenames) — Windows drive colons and backslashes."""
+    s = str(Path(p).resolve()).replace("\\", "/")
+    return s.replace(":", "\\:")

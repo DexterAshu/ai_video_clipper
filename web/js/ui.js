@@ -1,0 +1,118 @@
+/* Shared DOM helpers used by every view and the pickers. */
+
+export function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) node.setAttribute(k, v);
+  }
+  for (const c of children.flat()) {
+    if (c === null || c === undefined) continue;
+    node.append(c.nodeType ? c : document.createTextNode(c));
+  }
+  return node;
+}
+
+export function toast(message, kind = "") {
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  const t = el("div", { class: `toast ${kind}`, role: "status" }, message);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
+export function fmtClock(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec)) return "—";
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+export function fmtBytes(n) {
+  if (!n || n < 0) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1);
+  return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+/* A modal yes/no confirm. Resolves true only if the user confirms; closing or
+ * cancelling resolves false. `body` is a string or a DOM node. */
+export function confirmDialog({ title, body, confirmLabel = "Delete",
+                               danger = true }) {
+  return new Promise((resolve) => {
+    let decided = false;
+    const done = (v) => { if (!decided) { decided = true; resolve(v); }
+                          dlg.close(); };
+    const confirmBtn = el("button",
+      { class: `btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`,
+        type: "button", onclick: () => done(true) }, confirmLabel);
+    const cancelBtn = el("button",
+      { class: "btn btn-ghost btn-sm", type: "button",
+        onclick: () => done(false) }, "Cancel");
+    const dlg = el("dialog", { class: "dialog" },
+      el("div", { class: "dialog-head" }, el("h2", { class: "t-title" }, title)),
+      el("div", { class: "dialog-body", style: "display:grid;gap:16px" },
+        typeof body === "string"
+          ? el("p", { class: "t-dim", style: "margin:0" }, body) : body,
+        el("div", { class: "field-inline" }, confirmBtn, cancelBtn)));
+    dlg.addEventListener("close", () => { resolve(false); dlg.remove(); });
+    document.body.append(dlg);
+    dlg.showModal();
+  });
+}
+
+// one truthiness rule for the keep flag everywhere: absent = kept
+export const isKept = (clip) => clip.kept !== false;
+
+/* The one clip <video> used everywhere a clip is shown (Results, editor,
+ * upload queue) so there's a single implementation, not three. Defaults to a
+ * controllable, seekable player; pass opts to override (e.g. class, muted,
+ * or controls:null for a click-to-preview thumbnail). src is applied last so
+ * it can't be clobbered by opts. */
+export function clipVideo(src, opts = {}) {
+  return el("video", { controls: "", playsinline: "", preload: "metadata",
+                       ...opts, src });
+}
+
+/* A compact clip thumbnail that opens a full click-to-play preview. Shared by
+ * the upload-queue rows and the library tab so preview behaves the same. */
+export function thumbButton(src, title, cls) {
+  return el("button", { class: "uq-thumb-btn", type: "button",
+                        "aria-label": `Play preview of ${title}`,
+                        onclick: () => openClipPreview(src, title) },
+    clipVideo(src, { class: cls, controls: null, muted: "" }),
+    el("span", { class: "uq-play", "aria-hidden": "true" }, "▶"));
+}
+
+/* Click-to-play preview modal with a large player. Used by the compact
+ * upload-queue rows, where a 64px inline video can't actually be watched. */
+export function openClipPreview(src, title = "Preview") {
+  const dlg = el("dialog", { class: "dialog dialog-preview" },
+    el("div", { class: "dialog-head" },
+      el("h2", { class: "t-title" }, title || "Preview"),
+      el("button", { class: "btn btn-ghost btn-sm", type: "button",
+                     "aria-label": "Close", onclick: () => dlg.close() }, "✕")),
+    el("div", { class: "dialog-body" },
+      clipVideo(src, { class: "clip-preview-video", autoplay: "" })));
+  document.body.append(dlg);
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.showModal();
+  return dlg;
+}
+
+/* A labeled switch. Returns { node, input }. */
+export function toggle(checked, label) {
+  const input = el("input", { type: "checkbox" });
+  input.checked = checked;
+  return {
+    input,
+    node: el("label", { class: "opt-toggle" }, label,
+      el("span", { class: "switch" }, input, el("span", { class: "knob" }))),
+  };
+}
+
+/* A form field: label above control (plus optional inline extra). */
+export function field(label, control, extra) {
+  return el("div", { class: "field" },
+    el("label", {}, label),
+    extra ? el("div", { class: "field-inline" }, control, extra) : control);
+}

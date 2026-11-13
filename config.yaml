@@ -1,0 +1,360 @@
+# ClipForge configuration. Secrets never live here — .env only.
+
+python:
+  required: "3.11"          # MediaPipe wheel compatibility; enforced at startup
+  allow_unsupported: false
+
+ffmpeg:
+  pinned_version: "8.1.2"   # verified at setup; Docker pins its own build
+  require_exact: false      # host: warn on drift; Docker: exact
+  timeout_base_seconds: 1800        # ffmpeg watchdog floor
+  timeout_per_input_second: 3.0     # scales with input duration: max(base, dur*this)
+
+llm:
+  provider: auto            # auto | mock | gemini | groq | ollama | openrouter
+                            # auto -> gemini when GEMINI_API_KEY set, else mock (logged at startup)
+  max_retries: 2
+  backoff_base_seconds: 1.5
+  gemini_model: gemini-flash-latest
+  groq_model: llama-3.3-70b-versatile
+  ollama_model: llama3.1
+  ollama_base_url: http://localhost:11434
+  # OpenRouter vision model for viral_v2's frame-batch fallback. Free-model ids
+  # rotate — update here, never hardcoded in code. Needs OPENROUTER_API_KEY in .env.
+  openrouter_model: qwen/qwen2.5-vl-72b-instruct:free
+
+viral_v2:
+  # Multimodal viral-moment detection (video via Gemini/OpenRouter free tiers,
+  # audio via local DSP). enabled: false -> events stage skipped entirely;
+  # transcript-only pipeline is byte-identical to pre-feature behavior.
+  enabled: true
+  # PRIVACY: local video files are NEVER uploaded to an AI provider unless this
+  # is explicitly true. YouTube-URL sources are exempt (already public).
+  allow_upload: false
+  providers: [gemini, openrouter]   # cloud order; keyless -> audio-DSP only
+  chunk_minutes: 10          # ffmpeg stream-copy chunk size for Gemini upload
+  frame_interval_s: 2.0      # OpenRouter fallback: 1 frame per this many seconds
+  reaction_window_s: 6.0     # extend clip end into a reaction starting within this
+  min_shot_s: 1.5            # reframe hard-cut hysteresis: min hold per shot
+  max_daily_minutes: 120     # cap on source minutes sent to cloud APIs per day
+  sparse_wpm: 40             # below this words/min, candidates come from event clusters
+  merge_gap_s: 2.0           # events within this gap merge (max intensity wins)
+  density_weight: 0.4        # score += this * weighted events/min (capped at 2.0)
+  peak_weight: 0.15          # score += this * max event intensity in span
+  weights:                   # per-type multipliers for the density component
+    laughter: 1.0
+    strong_reaction: 1.0
+    physical_event: 0.8
+    reveal: 0.9
+    expression_shift: 0.5
+    energy_spike: 0.6
+    profound_statement: 0.9
+    conflict: 0.8
+    celebration: 0.7
+    other: 0.3
+
+whisper:
+  # Model matrix — performance targets assume these defaults.
+  gpu: { model: large-v3, compute_type: float16 }
+  cpu: { model: small,    compute_type: int8 }
+  model_dir: cache/models
+  language: null            # autodetect
+  model_override: ""        # blank = use the matrix model; else tiny/base/small/medium/large-v3
+  beam_size: 1              # greedy decode: 2-3x faster on CPU, fine for captions
+                            # (raise to 5 for max transcription accuracy)
+
+clips:
+  min_seconds: 30
+  max_seconds: 60
+  max_candidates: 10
+  target_count: 0           # 0 = auto (keep_ratio rule); 1-20 = keep exactly N
+  keep_ratio: 0.7           # drop bottom 30% by weighted rescore
+  min_keep: 3               # but never fewer than 3 (or all, if fewer exist)
+  rescore_weights: { hook_strength: 0.35, retention: 0.30, clarity: 0.20, impact: 0.15 }
+
+captions:
+  preset: karaoke-pop
+  font_dir: assets/fonts
+  max_words_per_line: 3
+  bottom_margin_px: 220     # keeps text out of platform UI zones (1920px frame)
+  watermark:                # brand overlay burned onto every clip (off by default)
+    mode: off               # off | text | image  (image overlays a logo PNG)
+    enabled: false          # legacy flag; honored when `mode` is absent
+    text: ""                # text mode: e.g. "@yourhandle"
+    image_path: ""          # image mode: logo under assets/user_branding/ (alpha PNG)
+    scale: 0.12             # image mode: logo width as fraction of frame width
+    position: bottom-right  # top-left | top-right | bottom-left | bottom-right | center
+    font_size: 36
+    opacity: 0.6            # 0..1 (applies to text and image modes)
+    margin_px: 40
+    font_file: assets/fonts/Montserrat-Bold.ttf
+  presets:
+    karaoke-pop:
+      font: Montserrat ExtraBold
+      font_size: 88
+      primary_color: "&H00FFFFFF"    # ASS BGR: white
+      highlight_color: "&H0000D7FF"  # gold-ish pop on active word
+      outline_color: "&H00000000"
+      outline: 5
+      shadow: 1
+      uppercase: false
+      highlight_scale: 108           # active word scale %
+      style: karaoke
+    bold-impact:
+      font: Montserrat Black
+      font_size: 92
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H00FF9500"  # keyword color flip (BGR: azure-orange)
+      outline_color: "&H00000000"
+      outline: 6
+      shadow: 0
+      uppercase: true
+      highlight_scale: 112
+      style: karaoke
+    clean-minimal:
+      font: Montserrat Regular
+      font_size: 64
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H00FFFFFF"
+      outline_color: "&H00000000"
+      outline: 2
+      shadow: 0
+      uppercase: false
+      highlight_scale: 100
+      style: fade            # single line, subtle fade, no karaoke pop
+    highlight-box:
+      font: Montserrat Bold
+      font_size: 80
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H00FFFFFF"
+      box_color: "&H00E16B16"        # filled box behind active word (BGR)
+      outline_color: "&H00000000"
+      outline: 0
+      shadow: 0
+      uppercase: false
+      highlight_scale: 100
+      style: box
+
+reframe:
+  output: { width: 1080, height: 1920 }
+  proxy_height: 360             # MediaPipe tracking runs on a 360p proxy (fast);
+  proxy_fps: 12                 # crop coords scale back to full res
+  face_detect_every_n_frames: 5
+  ema_alpha: 0.15               # crop path smoothing
+  lookahead_frames: 12          # future frames influence current crop
+  max_center_velocity_px: 14.0  # per-frame threshold (1080-wide crop space)
+  max_center_accel_px: 4.0
+  headroom_ratio: 0.40          # face center sits 40% from top on fallback
+  min_face_confidence: 0.5
+
+style:
+  # Timeline refinement layer (runs after highlights, before cut/reframe/captions).
+  # enabled: false -> stage skipped entirely, output byte-identical to pre-feature main.
+  enabled: true
+  profile: profiles/user.json      # StyleProfile; tunes hook/pacing/caption targets
+                                   # (built from refs/ via style_profile.py; default.json is the fallback)
+
+  # --- start fixer ---
+  hook_search_window_s: 5.0        # forward search for a self-contained hook
+  filler_openers: [um, uh, so, okay, ok, like, well, yeah, right, anyway]
+  zoom_punch_scale: 1.06           # weak-hook punch-in target scale over first 1.5s
+  zoom_punch_seconds: 1.5
+
+  # --- pacing cleaner ---
+  max_pause_s: 0.6                 # any word gap above this is compressed
+  target_pause_s: 0.35            # compressed-to length (clamped 0.25-0.5)
+  pad_ms: 100                      # padding around each cut point (never inside a word)
+  max_removal_ratio: 0.20          # cap total removed per clip; longest pauses go first
+  crossfade_ms: 30                 # audio crossfade at segment joins (no clicks)
+
+  # --- render effects (usually set per-run via editing presets, not here) ---
+  speed_ramps:
+    enabled: false                 # speed up word-free gaps that survived
+    rate: 1.5                      # pause compression (1.0-2.0, atempo limit)
+    min_gap_s: 0.45
+  punch_in:
+    mode: "off"                    # "off" | emphasis | interval (quoted — bare
+    amount_pct: 7                  # off is YAML false)
+    interval_s: 8
+  popins: []                       # [{keyword, asset}] keyword -> PNG overlay
+  transition: cut                  # cut | whip | zoom (at timeline joins)
+  intro: ""                        # bumper video/image path ("" = none)
+  outro: ""
+  bumper_image_s: 2.0              # still-image bumper duration
+
+  # --- ending optimizer ---
+  tail_ms: 250                     # silence kept after the last word
+  min_ending_words: 4              # rule-fallback: final sentence must be >= this
+  audio_fade_in_ms: 150            # every clip, both ends — no hard audio edges
+  audio_fade_out_ms: 250
+  unresolved_fade_ms: 300          # gentle A/V fade when ending can't be resolved
+
+  # --- caption position law (applies to all presets + CTA) ---
+  captions:
+    vertical_anchor: 0.60          # block center; HARD-clamped to [0.52, 0.66]
+    words_per_line: 3
+    side_margin_px: 60             # min horizontal margin
+
+  # --- call to action overlay (rendered by caption/ASS layer, never TTS) ---
+  cta:
+    enabled: true
+    text: "Follow for more"
+    duration_s: 1.5
+
+  # --- burned-in subtitle handling ---
+  existing_subs:
+    mode: auto                     # auto | replace | keep | ignore
+    max_band_ratio: 0.18           # REPLACE only if detected band <= this fraction of frame
+
+  # --- subtitle detector (OpenCV) ---
+  subtitle_detect:
+    sample_fps: 1.0                # frames sampled per second across the clip range
+    search_band_ratio: 0.45        # only inspect the lower 45% of the frame
+    persistence_ratio: 0.30        # band must persist in >= this fraction of frames
+    window_seconds: 6.0            # ...within any sliding window this long, not the whole clip
+                                    # (catches per-line/intermittent burned subs a global average dilutes away)
+    max_band_ratio: 0.18           # REPLACE-eligibility mirror (detector reports; refiner decides)
+
+sample:
+  # Public-domain film, direct mp4 from archive.org (never YouTube for --sample).
+  primary_url: "https://archive.org/download/DuckandC1951/DuckandC1951_512kb.mp4"
+  sha256: "ab0a244f9705792c8b24e9ab1e1f85a7d8ea0c3c1b8cbf8810271e608b6578b6"
+  mirrors:
+    - "https://dn600203.us.archive.org/0/items/DuckandC1951/DuckandC1951_512kb.mp4"
+    - "https://archive.org/download/Capitali1948/Capitali1948_512kb.mp4"  # different PD film; hash not enforced
+  synthetic_fallback: true      # scripts/make_synthetic_sample.py when all mirrors fail
+
+paths:
+  output_dir: output
+  cache_dir: cache
+  inbox_dir: inbox
+  db_path: jobs.db
+
+render:
+  crf: 19
+  preset_final: veryfast   # medium blew the <15min CPU budget; veryfast @ crf19 is visually fine for shorts
+  preset_intermediate: veryfast
+  audio_bitrate: 128k
+  compute: auto                 # auto | gpu | cpu — forces Whisper device + encoder
+  use_nvenc: auto               # auto | never  (auto: NVENC when NVIDIA GPU present)
+  parallel_workers: auto        # auto = min(clips, max(1, cpu_count // 2))
+
+music:
+  # Background music is chosen per run in the UI (dropdown + volume). These are
+  # the defaults used when the UI leaves them unset.
+  default_track: ""             # "" = no music unless picked in the UI
+  default_volume_db: -18        # gently ducked under speech (audible bed)
+  library_dir: assets/music     # designated royalty-free library; tracks
+                                # outside it raise a license warning (non-fatal)
+  duck:                         # sidechaincompress keyed by the voice track
+    threshold: 0.05             # ~-26 dB: only real speech triggers the duck
+    ratio: 3
+    attack: 15                  # ms
+    release: 200                # ms — recovers between words
+  loudnorm:                     # final-mix normalization (platform standard);
+    enabled: true               # runs on every clip, music or not
+    i: -14                      # integrated loudness target (LUFS)
+    tp: -1                      # true-peak ceiling (dBTP)
+    lra: 11
+
+sfx:
+  # Sound effects layered onto the voice track at cut points and emphasis
+  # words, before the music bed. Off by default; editing presets turn it on.
+  enabled: false
+  pack: default                 # assets/sfx/<pack>/manifest.json (kind -> file);
+                                # the default pack is synthesized locally on
+                                # first use — no bundled audio files
+  volume_db: -10
+  max_per_clip: 8
+  triggers: [cuts, emphasis]    # cuts -> whoosh at segment joins;
+                                # emphasis -> pop on emphasized words
+
+
+download:
+  # yt-dlp behaviour for fetching source videos. YouTube sometimes challenges
+  # automated downloads with "Sign in to confirm you're not a bot". Safest
+  # fixes, in order:
+  #   1) keep yt-dlp updated (`.venv/Scripts/python -m pip install -U yt-dlp`)
+  #   2) rate-limit below so requests look human (needs no account — safest)
+  #   3) ONLY if still blocked: cookies from a SEPARATE / throwaway Google
+  #      account. NEVER your main account — automated use can get an account
+  #      flagged or suspended.
+  cookies_file: ""            # path to a cookies.txt exported from a SECONDARY
+                              # account (see yt-dlp "How do I pass cookies")
+  cookies_from_browser: ""    # e.g. "edge"/"chrome"/"firefox" — uses that
+                              # browser's logged-in session (secondary account!)
+  sleep_interval_s: 5         # min random delay before each download (0 = off)
+  max_sleep_interval_s: 15    # max random delay — human-like pacing
+  user_agent: ""              # optional UA override; blank = yt-dlp default
+
+channels:
+  # Approved channels & auto-pull. Channels themselves are managed in the UI
+  # (cache/channels.json) — a channel is NEVER polled without a filled-in
+  # permission_source (clipping program / creator approval) and credit text.
+  poll_interval_s: 3600         # hourly check for new uploads
+  top_n_default: 10             # top performers fetched per channel
+
+classify:
+  enabled: true                 # tag each clip with a content niche (library
+                                # organization); best-effort — never blocks a render
+  custom_niches: []             # extra niche names beyond the built-in taxonomy
+
+upload:
+  auto_enabled: true            # off by default; turn on once YouTube is authorized
+  require_approval: true        # new clips wait in "Awaiting approval" before any
+                                # upload; false = fully automatic (pre-approval behavior)
+  max_per_day: 5
+  max_per_run: 5
+  accounts:                     # destination accounts for the posting queue.
+    # Per-account settings win over the flat keys above (which remain the
+    # fallback for anything unset). Additional accounts each need their own
+    # one-time OAuth (token cached as cache/youtube_token_<name>.json);
+    # 'default' uses the original cache/youtube_token.json.
+    # avatar_host: true marks an Avatar Host account — its max_per_day
+    # defaults to 1 unless set explicitly on the account.
+    default:
+      max_per_day: 5
+      publish_slots_ist: [12, 17, 19]
+  schedule_ahead_days: 3        # "Sync schedule" pre-books this many days of
+                                # slots as private+publishAt uploads, so the
+                                # laptop needn't be on at publish time (capped
+                                # by API quota ~6 uploads/day)
+  min_virality: 40
+  publish_slots_ist: [17]    # fallback/floor publish hours — always used until
+                                # publish_timing's gates pass (below), and again
+                                # any time it's disabled or has nothing learned yet
+  slot_spacing_minutes: 60      # min gap between uploads; extra slots pack after the
+                                # last configured hour so max_per_day is reachable
+                                # even with fewer configured hours than uploads/day
+  publish_timing:                # self-learning publish hours (publish_timing.py) —
+                                # learns from ClipForge's OWN upload history/views,
+                                # NOT YouTube's audience-online chart (the API doesn't
+                                # expose that). See publish_timing.py's module docstring.
+    enabled: true                 # learn once the gates below pass; false pins to
+                                  # publish_slots_ist regardless of data
+    min_total_uploads: 15         # system-wide gate: this many uploads before learned
+                                  # hours override publish_slots_ist at all
+    min_hour_samples: 3           # per-hour gate: an hour needs this many videos
+                                  # before its score is trusted (else exploration-only)
+    recency_half_life_days: 30    # hour scores decay by half every this many days
+    explore_window_start: 8       # IST hours eligible for exploration
+    explore_window_end: 23
+    explore_epsilon_start: 0.3    # exploration fraction while data is thin
+    explore_epsilon_floor: 0.05   # never fully stops checking under-sampled hours
+    explore_epsilon_decay_per_upload: 0.01
+    pinned_hours: []               # owner-pinned hours: always in the active set
+    banned_hours: []               # owner-banned hours: never picked, exploit or explore
+  ntfy_topic: ""                 # ntfy.sh topic for phone notifications; "" = disabled
+  category_id: "22"              # matches youtube_upload.py's default (People & Blogs)
+  watch_interval_s: 60           # poll interval for `python upload.py watch`
+  end_watermark:                 # branded outro appended ONLY to the uploaded
+    enabled: false               # copy (the archived render stays clean)
+    text: "ClipForge"            # wordmark on the end card (Doto brand font)
+    duration_s: 1.2              # 0.5-3.0s; length of the appended end card
+
+ui:
+  auto_open: true               # open the UI automatically when ClipForge starts
+  window_mode: app              # app = chromeless --app window (Edge/Chrome); tab = normal browser tab
+
+debug: false                    # true: persist transcripts, prompts, raw LLM responses,
+                                # candidate rankings, reframe debug frames
