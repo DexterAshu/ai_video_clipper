@@ -463,55 +463,79 @@ function renderHome() {
     });
   wmRows.image.style.display = "none";
 
-  const makeBtn = el("button", { class: "btn btn-primary btn-lg", type: "button" },
-    "Make clips");
+  const makeBtn = el("button", {
+    class: "btn btn-primary btn-lg",
+    style: "width:100%;padding:14px 20px;font-size:var(--text-md);font-weight:700;letter-spacing:0.02em",
+    type: "button"
+  }, "Make clips");
   makeBtn.addEventListener("click", start);
   urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
 
+  const brandCard = el("div", { class: "studio-brand-card card" },
+    el("div", { class: "studio-brand-info" },
+      el("div", { class: "t-label" }, "AI Short Video Studio"),
+      el("h1", { class: "t-display", style: "font-size:var(--text-xl);margin:0" }, "Turn Long Videos into Viral Shorts"),
+      el("p", { class: "t-dim", style: "margin:4px 0 0;font-size:var(--text-sm)" },
+        "Free, local AI video clipper. Analyzes speech, detects viral moments, reframes faces to 9:16 vertical, and generates animated captions."),
+      el("div", { style: "margin-top:8px" }, sysPill)),
+    el("img", {
+      src: "logo.png",
+      alt: "Frameza",
+      class: "studio-logo-img",
+    }));
+
+  const inputCard = el("div", { class: "studio-card card" },
+    el("div", { class: "studio-section-title" }, "1. Input Video"),
+    el("div", { class: "source-row" }, urlInput, ytPreviewWrap, dropHint, fileChipWrap));
+
+  const formatCard = el("div", { class: "studio-card card" },
+    el("div", { class: "studio-section-title" }, "2. Output Format & Duration"),
+    field("Format & Aspect Ratio", aspectSeg),
+    field("Quality / Resolution", qualitySeg),
+    field("Target Clip Duration", durPills, customDurRow));
+
+  const mainCol = el("div", { class: "studio-main" },
+    brandCard,
+    inputCard,
+    formatCard,
+    el("div", { style: "margin-top:2px" }, makeBtn));
+
+  const aiCard = el("div", { class: "studio-card card" },
+    el("div", { class: "studio-section-title" }, "3. AI Features & Highlight Selection"),
+    el("div", { class: "toggles-grid" },
+      faceToggle.node,
+      subsToggle.node,
+      viralToggle.node,
+      metaToggle.node,
+      styleToggle.node),
+    field("Number of Clips", countPills, customCountRow),
+    field("Pacing & Flow", pacingSel));
+
+  const stylingCard = el("div", { class: "studio-card card" },
+    el("div", { class: "studio-section-title" }, "4. Captions & Call To Action"),
+    presetRow.node,
+    fontRow.node,
+    field("Call to Action (Ending Message)", ctaInput));
+
+  const audioBrandCard = el("div", { class: "studio-card card" },
+    el("div", { class: "studio-section-title" }, "5. Audio & Watermark"),
+    el("div", { class: "field" },
+      el("label", {}, "Background Music"),
+      musicToggle.node,
+      musicArea),
+    field("Watermark", wmSeg),
+    wmRows.text, wmRows.image, wmPosRow.node);
+
+  const sidebarCol = el("div", { class: "studio-sidebar" },
+    aiCard,
+    stylingCard,
+    audioBrandCard);
+
+  const studioGrid = el("div", { class: "studio-grid" }, mainCol, sidebarCol);
+
   view.append(el("section", { class: "screen" },
     statsRow,
-    el("div", { class: "hero" },
-      el("img", {
-        src: "logo.png",
-        alt: "Frameza — Turn every frame into a story",
-        style: "max-width:320px;width:100%;height:auto;margin:0 auto var(--sp-3);display:block;border-radius:var(--r-md);box-shadow:0 8px 30px rgba(0,0,0,0.6)"
-      }),
-      sysPill,
-      el("h1", { class: "t-display" }, "Turn Long Videos into Viral Short Clips"),
-      el("p", { class: "hero-sub" },
-        "Free, local AI video clipper. Analyzes speech, detects viral moments, reframes faces to 9:16 vertical, and generates animated captions."),
-      el("div", { class: "source-row" }, urlInput, ytPreviewWrap, dropHint, fileChipWrap),
-
-      el("details", { class: "opts", open: true },
-        el("summary", {}, "Processing Preferences"),
-        el("div", { class: "opts-body" },
-          field("Format & Aspect Ratio", aspectSeg),
-          field("Quality / Resolution", qualitySeg),
-          field("Target Clip Duration", durPills, customDurRow),
-          field("Number of Clips", countPills, customCountRow),
-          field("Pacing & Flow", pacingSel))),
-
-      el("details", { class: "opts", open: true },
-        el("summary", {}, "AI Capabilities & Styling"),
-        el("div", { class: "opts-body" },
-          el("div", { class: "field" },
-            el("label", {}, "AI Features"),
-            faceToggle.node,
-            subsToggle.node,
-            viralToggle.node,
-            metaToggle.node,
-            styleToggle.node),
-          presetRow.node,
-          fontRow.node,
-          el("div", { class: "field" },
-            el("label", {}, "Audio & Music"),
-            musicToggle.node,
-            musicArea),
-          field("Call to Action (Ending Message)", ctaInput),
-          field("Watermark", wmSeg),
-          wmRows.text, wmRows.image, wmPosRow.node)),
-
-      el("div", { style: "margin-top:16px" }, makeBtn)),
+    studioGrid,
     filePicker, wmLogoIn));
 
   // drag & drop over page
@@ -630,29 +654,45 @@ function segmented(items, current, onChange) {
 // ------------------------------------------------------------ progress ----
 
 function renderRun(runId) {
-  const stageTitle = el("h1", { class: "t-display" }, "Getting ready");
-  const detail = el("p", { class: "t-dim", style: "margin:0;min-height:1.5em" }, " ");
-  const pct = el("span", { class: "t-hero-num" }, "0");
-  const eta = el("span", { class: "t-mono" }, "");
+  const stageTitle = el("h1", { class: "t-display", style: "margin:0;font-size:var(--text-xl)" }, "Getting ready");
+  const detail = el("p", { class: "t-dim", style: "margin:4px 0 0;min-height:1.4em" }, " ");
+  const pct = el("span", { class: "t-hero-num", style: "font-size:3.5rem;line-height:1" }, "0");
+  const eta = el("span", { class: "t-mono badge", style: "font-size:var(--text-xs)" }, "");
   const canvas = el("canvas");
   const stageList = el("div", { class: "stage-list" });
-  const logEntries = el("div", { class: "log-console" });
-  const logDetails = el("details", { class: "log-console-wrap", open: true },
-    el("summary", { class: "t-label", style: "cursor:pointer;margin-bottom:8px" }, "Live Execution Log"),
+  const logEntries = el("div", { class: "log-console", style: "flex:1;min-height:360px;max-height:480px" });
+  const cancelBtn = el("button", { class: "btn btn-danger btn-sm", type: "button" }, "Stop");
+
+  const headRow = el("div", { class: "results-head", style: "margin-bottom:var(--sp-4)" },
+    el("div", {},
+      el("div", { class: "t-label" }, "Processing Run"),
+      stageTitle,
+      detail),
+    el("div", { class: "field-inline", style: "align-items:center;gap:12px" },
+      eta,
+      cancelBtn));
+
+  const visualCard = el("div", { class: "card progress-visual-card" },
+    el("div", { style: "display:flex;align-items:baseline;justify-content:center;gap:4px;margin-bottom:12px" },
+      pct,
+      el("span", { class: "t-title t-dim", style: "font-size:1.5rem" }, "%")),
+    canvas,
+    el("div", { class: "t-label", style: "margin:16px 0 8px;align-self:flex-start" }, "Pipeline Stages"),
+    stageList);
+
+  const logCard = el("div", { class: "card progress-log-card" },
+    el("div", { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px" },
+      el("span", { class: "t-label" }, "Live Execution Console"),
+      el("span", { class: "sys-dot" })),
     logEntries);
-  const cancelBtn = el("button", { class: "btn btn-ghost", type: "button" }, "Stop");
+
+  const progressGrid = el("div", { class: "progress-screen-grid" },
+    visualCard,
+    logCard);
 
   view.append(el("section", { class: "screen" },
-    el("div", { class: "progress-wrap" },
-      el("div", { class: "t-label" }, "Making clips"),
-      stageTitle,
-      el("div", {}, pct, el("span", { class: "t-title t-dim" }, "%")),
-      canvas,
-      el("div", { class: "progress-readout" }, eta),
-      detail,
-      stageList,
-      logDetails,
-      cancelBtn)));
+    headRow,
+    progressGrid));
 
   const dm = createDotMatrix(canvas, { variant: "progress" });
   dm.update({ fraction: 0, state: "running" });
@@ -1496,7 +1536,7 @@ async function renderChannels() {
 }
 
 async function renderAnalytics() {
-  const body = el("div", { class: "yt-grid" },
+  const body = el("div", { class: "an-dashboard-grid" },
     el("div", { class: "skeleton", style: "height:220px" }),
     el("div", { class: "skeleton", style: "height:220px" }));
   view.append(el("section", { class: "screen" },
@@ -1511,12 +1551,12 @@ async function renderAnalytics() {
   // Reads only local files (upload_log.json, config, its own stats store) —
   // mounted independently so it shows real gate status even before YouTube
   // is connected or if the main analytics fetch below fails.
-  const scheduleCard = el("div", { class: "card uq-span", style: "display:grid;gap:12px" });
+  const scheduleCard = el("div", { class: "card", style: "display:grid;gap:12px" });
   mountPublishTiming(scheduleCard);
 
   // Operation dashboard: per-channel pull/clip/post counts + preset usage.
   // Local files only; renders regardless of YouTube connection state.
-  const opsCard = el("div", { class: "card uq-span", style: "display:grid;gap:12px" });
+  const opsCard = el("div", { class: "card", style: "display:grid;gap:12px" });
   (async () => {
     try {
       const [ch, pr] = await Promise.all([
@@ -1773,19 +1813,21 @@ async function renderSettings() {
   renderUpdate(upd.state);
 
   wrap.replaceChildren(
-    el("div", { class: "card", style: "display:grid;gap:16px" },
-      el("h2", { class: "t-title", style: "margin:0" }, "Understanding & speed"),
-      field("Writing titles and finding moments", providerSel),
-      field("Gemini model (blank = default)", gemIn),
-      field("Groq model (blank = default)", groqIn),
-      field("Ollama model (blank = default)", ollamaIn),
-      field("Speed", computeSel),
-      field("Speech recognition accuracy", whisperSel),
-      field("Custom niches (comma-separated)", nichesIn),
+    el("div", { class: "card", style: "display:grid;gap:14px" },
+      el("h2", { class: "t-title", style: "margin:0" }, "AI & Highlight Engine"),
+      field("Highlight Provider", providerSel),
+      field("Ollama model (local AI)", ollamaIn),
+      field("Gemini model (cloud optional)", gemIn),
+      field("Groq model (cloud optional)", groqIn),
+      field("Custom niches (comma-separated)", nichesIn)),
+    el("div", { class: "card", style: "display:grid;gap:14px" },
+      el("h2", { class: "t-title", style: "margin:0" }, "Processing & Speech"),
+      field("Hardware Acceleration", computeSel),
+      field("Speech Recognition (Whisper)", whisperSel),
       approvalToggle.node,
-      el("div", {}, saveBtn)),
+      el("div", { style: "margin-top:auto;padding-top:8px" }, saveBtn)),
     el("div", { class: "card card-flat", style: "display:grid;gap:12px" },
-      el("h2", { class: "t-title", style: "margin:0" }, "This computer"),
+      el("h2", { class: "t-title", style: "margin:0" }, "This Computer"),
       kv("Version", upd.current || sys.version),
       kv("Speed", accel),
       kv("Processor cores", String(sys.cpu_count ?? "—")),

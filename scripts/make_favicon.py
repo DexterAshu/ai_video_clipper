@@ -1,13 +1,11 @@
-"""Generate the ClipForge window/tab icon from the bundled Doto font.
+"""Generate the Frameza window/tab icon from the bundled Doto font.
 
 Chromium app-mode (launcher.py --app=) takes the window and taskbar icon from
-the page favicon; the app shipped none, so Edge showed its own. This renders a
-dot-matrix "C" (Doto, the brand display font) in the Nothing-red accent on a
-dark rounded square and writes web/favicon.ico (multi-size) + web/favicon.png.
+the page favicon; this renders a dot-matrix "F" (Doto, the brand display font)
+in the Nothing-red accent on a dark rounded square and writes web/favicon.ico
+(multi-size) + web/favicon.png.
 
-One-off; re-run only to change the mark.
-
-Run:  .venv\\Scripts\\python scripts\\make_favicon.py
+Run:  .venv\Scripts\python scripts\make_favicon.py
 """
 from __future__ import annotations
 
@@ -21,8 +19,8 @@ WEB = ROOT / "web"
 
 ACCENT = (215, 25, 33, 255)      # #d71921, the brand accent
 BG = (11, 11, 12, 255)           # near-black tile
-SIZE = 256
-GLYPH = "C"
+SIZE = 512
+GLYPH = "F"
 
 
 def _load_font(px: int) -> ImageFont.FreeTypeFont:
@@ -40,8 +38,8 @@ def _render(size: int) -> Image.Image:
     radius = round(size * 0.22)
     d.rounded_rectangle([0, 0, size - 1, size - 1], radius=radius, fill=BG)
 
-    # size the glyph to ~72% of the tile, centered on its actual ink box
-    font = _load_font(round(size * 0.82))
+    # size the glyph to ~73% of the tile, centered on its actual ink box
+    font = _load_font(round(size * 1.05))
     l, t, r, b = d.textbbox((0, 0), GLYPH, font=font)
     x = (size - (r - l)) / 2 - l
     y = (size - (b - t)) / 2 - t
@@ -50,11 +48,11 @@ def _render(size: int) -> Image.Image:
 
 
 def _render_endcard(w: int = 270, h: int = 480,
-                    text: str = "ClipForge") -> Image.Image:
+                    text: str = "Frameza") -> Image.Image:
     """A 9:16 end-card preview matching the upload-time outro (dark tile,
     Doto wordmark in the accent) so the confirm dialog can show what gets
     appended before a video is published."""
-    img = Image.new("RGBA", (w, h), (11, 11, 12, 255))   # 0x0b0b0c, the outro bg
+    img = Image.new("RGBA", (w, h), (11, 11, 12, 255))
     d = ImageDraw.Draw(img)
     font = _load_font(round(h * 0.09))
     l, t, r, b = d.textbbox((0, 0), text, font=font)
@@ -68,6 +66,9 @@ def main() -> int:
         raise SystemExit(f"Doto font not found: {FONT}")
     master = _render(SIZE)
     master.save(WEB / "favicon.png")
+    master.resize((192, 192), Image.Resampling.LANCZOS).save(WEB / "favicon-192.png")
+    master.resize((32, 32), Image.Resampling.LANCZOS).save(WEB / "favicon-32.png")
+    master.resize((16, 16), Image.Resampling.LANCZOS).save(WEB / "favicon-16.png")
     # .ico carries several sizes so the OS/browser picks a crisp one per context
     sizes = [16, 24, 32, 48, 64, 128, 256]
     master.save(WEB / "favicon.ico", sizes=[(s, s) for s in sizes])

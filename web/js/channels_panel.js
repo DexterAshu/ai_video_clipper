@@ -141,17 +141,26 @@ export function mountChannels(container) {
       saveBtn.disabled = false;
     });
 
-    formWrap.replaceChildren(el("div", { class: "card", style: "display:grid;gap:12px" },
-      el("h3", { class: "t-label", style: "margin:0" }, "Add approved channel"),
+    const colSource = el("div", { class: "card", style: "display:grid;gap:12px" },
+      el("h3", { class: "t-label", style: "margin:0" }, "Channel Source & Attribution"),
       field("Channel link", url),
       field("Name", name),
       field("Permission source (optional)", permission),
-      field("Creator credit for descriptions (optional)", credit),
-      el("div", { class: "field-inline" },
-        field("Default preset", preset),
-        field("Top videos to pull", topN)),
+      field("Creator credit for descriptions (optional)", credit));
+
+    const colDest = el("div", { class: "card", style: "display:grid;gap:12px" },
+      el("h3", { class: "t-label", style: "margin:0" }, "Automation & Destination"),
       field("Upload to which YouTube channel", account),
-      el("div", { class: "field-inline" }, saveBtn, cancelBtn)));
+      field("Default preset", preset),
+      field("Top videos to pull", topN),
+      el("div", { class: "field-inline", style: "margin-top:auto;padding-top:12px" }, saveBtn, cancelBtn));
+
+    formWrap.replaceChildren(
+      el("div", { style: "margin:16px 0 8px" },
+        el("h3", { class: "t-title", style: "margin:0" }, "Add approved channel")),
+      el("div", { class: "channel-form-grid" },
+        colSource,
+        colDest));
   }
 
   async function showPool(c) {

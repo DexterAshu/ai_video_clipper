@@ -178,32 +178,46 @@ export function mountPresets(container) {
       saveBtn.disabled = false;
     });
 
-    editorWrap.replaceChildren(el("div", { class: "card", style: "display:grid;gap:12px" },
-      el("h3", { class: "t-label", style: "margin:0" },
-        isNew ? "New preset" : `Edit "${p.name}"`),
-      field("Name", name),
+    const colVisuals = el("div", { class: "card", style: "display:grid;gap:12px" },
+      el("h3", { class: "t-label", style: "margin:0" }, "Visuals & Subtitles"),
+      field("Preset Name", name),
+      el("div", { class: "field-inline" },
+        field("Aspect ratio", aspect),
+        field("Transition between cuts", transition)),
       el("div", { class: "field-inline" },
         field("Caption style", capPreset),
         field("Word animation", animation),
         field("Highlight color", highlight)),
-      el("div", { class: "field-inline" },
-        field("Aspect ratio", aspect),
-        field("Transition between cuts", transition)),
-      field("CTA text", ctaText),
-      el("div", { class: "field-inline" }, sfxOn.node, field("SFX volume (dB)", sfxVol)),
+      field("CTA text", ctaText));
+
+    const colAudioBrand = el("div", { class: "card", style: "display:grid;gap:12px" },
+      el("h3", { class: "t-label", style: "margin:0" }, "Audio, Dynamics & Branding"),
       el("div", { class: "field-inline" },
         field("Background music", musicTrack),
         field("Music volume (dB)", musicVol)),
+      el("div", { class: "field-inline" }, sfxOn.node, field("SFX volume (dB)", sfxVol)),
       el("div", { class: "field-inline" },
         rampsOn.node, field("Speed factor", rampRate)),
       el("div", { class: "field-inline" },
         field("Punch-in zooms", punchMode),
         field("Zoom amount (%)", punchAmount)),
       el("div", { class: "field-inline" }, field("Watermark", wmMode), field("Watermark text", wmText)),
-      field("Keyword pop-ins", popinsBox),
-      el("div", { class: "field-inline" }, previewBtn),
-      previewImg,
-      el("div", { class: "field-inline" }, saveBtn, cancelBtn)));
+      field("Keyword pop-ins", popinsBox));
+
+    const bottomActions = el("div", { class: "card card-flat", style: "display:grid;gap:12px;grid-column:1/-1" },
+      el("div", { class: "field-inline", style: "justify-content:space-between;flex-wrap:wrap;gap:12px" },
+        el("div", { class: "field-inline" }, previewBtn),
+        el("div", { class: "field-inline" }, saveBtn, cancelBtn)),
+      previewImg);
+
+    editorWrap.replaceChildren(
+      el("div", { style: "margin:16px 0 8px" },
+        el("h3", { class: "t-title", style: "margin:0" },
+          isNew ? "New preset" : `Edit "${p.name}"`)),
+      el("div", { class: "preset-editor-grid" },
+        colVisuals,
+        colAudioBrand,
+        bottomActions));
   }
 
   async function refresh() {
