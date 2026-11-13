@@ -6,7 +6,7 @@
 import { api, uploadFile, watchRun } from "./api.js";
 import { barsSVG, sparklineSVG } from "./charts.js";
 import { createDotMatrix, miniScore } from "./dots.js";
-import { clipVideo, confirmDialog, el, field, fmtBytes, fmtClock, isKept,
+import { clipVideo, confirmDialog, copyToClipboard, el, field, fmtBytes, fmtClock, isKept,
   toast, toggle } from "./ui.js";
 import {
   pickFont, pickMusic, pickPosition, pickPreset, pickProfile, pickShape,
@@ -46,10 +46,10 @@ const WORKSPACE_NAME_KEY = "clipforge_workspace_name";
 
 function navigate() {
   const [, name = "", ...rest] = location.hash.split("/");
-  // no workspace chosen yet -> land on the picker first, before any other screen
-  if (!localStorage.getItem(WORKSPACE_KEY) && name !== "workspaces") {
-    location.hash = "#/workspaces";
-    return;
+  // auto-default to 'default' workspace so user directly lands on home
+  if (!localStorage.getItem(WORKSPACE_KEY)) {
+    localStorage.setItem(WORKSPACE_KEY, "default");
+    localStorage.setItem(WORKSPACE_NAME_KEY, "Default");
   }
   if (cleanup) { cleanup(); cleanup = null; }
   document.querySelectorAll(".topbar nav a").forEach((a) => {
@@ -169,54 +169,237 @@ function renderHome() {
 
   // per-run options (empty string = leave the app's defaults untouched)
   const o = {
-    count: 0, aspect: "9:16", preset: "", font: "", music: "",
-    musicVol: -18, cta: "", highlight: "", pacing: "", clipMin: "",
-    clipMax: "", subsMode: "", profile: "", wmMode: "text", wmText: "",
+    count: 0, aspect: "9:16", quality: "1080p", faceTracking: true,
+    captions: true, metadata: true, preset: "", font: "", music: "",
+    musicVol: -18, cta: "", highlight: "", pacing: "", clipMin: "30",
+    clipMax: "60", subsMode: "", profile: "", wmMode: "text", wmText: "",
     wmImage: "", wmImageName: "", wmPos: "bottom-right",
   };
 
+  // ---- dashboard stats bar ----
+  const statsRow = el("div", { class: "dashboard-stats" });
+  const sysPill = el("div", { class: "sys-pill", style: "display:none" });
+
+  const loadStats = async () => {
+    try {
+      const s = await api.get("/api/dashboard/stats");
+      statsRow.replaceChildren(
+        el("div", { class: "stat-card" },
+          el("span", { class: "stat-label" }, "Videos Processed"),
+          el("span", { class: "stat-val" }, String(s.total_videos)),
+          el("span", { class: "stat-sub" }, `${s.completed_jobs} successful`)),
+        el("div", { class: "stat-card" },
+          el("span", { class: "stat-label" }, "Clips Generated"),
+          el("span", { class: "stat-val" }, String(s.total_clips)),
+          el("span", { class: "stat-sub" }, `${s.kept_clips} kept`)),
+        el("div", { class: "stat-card" },
+          el("span", { class: "stat-label" }, "Active Jobs"),
+          el("span", { class: "stat-val", style: s.active_jobs > 0 ? "color:var(--ok)" : "" }, String(s.active_jobs)),
+          el("span", { class: "stat-sub" }, s.active_jobs > 0 ? "Processing now" : "Idle")),
+        el("div", { class: "stat-card" },
+          el("span", { class: "stat-label" }, "Disk Storage"),
+          el("span", { class: "stat-val" }, fmtBytes(s.storage_bytes)),
+          el("span", { class: "stat-sub" }, "Output clips"))
+      );
+    } catch (_) {}
+    try {
+      const sys = await api.get("/api/system");
+      sysPill.replaceChildren(
+        el("span", { class: "sys-dot" }),
+        document.createTextNode(` ${sys.gpu_name} (NVENC + CUDA) · Ollama ${sys.ollama_model || 'llama3.2:3b'}`)
+      );
+      sysPill.style.display = "inline-flex";
+    } catch (_) {}
+  };
+  loadStats();
+
+  // ---- video ingestion (URL + Preview & File Upload) ----
   const urlInput = el("input", {
     class: "input input-hero", type: "text",
     placeholder: "Paste a YouTube or video link",
     "aria-label": "Video link",
   });
+  const ytPreviewWrap = el("div");
+
+  let inspectTimer = null;
+  const inspectUrl = () => {
+    clearTimeout(inspectTimer);
+    const u = urlInput.value.trim();
+    if (!u.startsWith("http")) {
+      ytPreviewWrap.replaceChildren();
+      return;
+    }
+    inspectTimer = setTimeout(async () => {
+      ytPreviewWrap.replaceChildren(el("div", { class: "t-dim", style: "font-size:var(--text-xs);padding:6px 0" }, "Inspecting video…"));
+      try {
+        const res = await api.post("/api/youtube/inspect", { url: u });
+        if (res.valid) {
+          const card = el("div", { class: "yt-preview-card" },
+            res.thumbnail ? el("img", { class: "yt-preview-thumb", src: res.thumbnail, alt: "thumbnail" }) : null,
+            el("div", { class: "yt-preview-info" },
+              el("div", { class: "yt-preview-title" }, res.title),
+              el("div", { class: "yt-preview-sub" },
+                res.uploader ? el("span", {}, res.uploader) : null,
+                res.duration ? el("span", { class: "t-mono" }, fmtClock(res.duration)) : null)),
+            el("button", {
+              class: "btn btn-ghost btn-sm", type: "button",
+              onclick: () => { urlInput.value = ""; ytPreviewWrap.replaceChildren(); }
+            }, "✕"));
+          ytPreviewWrap.replaceChildren(card);
+        } else {
+          ytPreviewWrap.replaceChildren(el("div", { class: "t-dim", style: "font-size:var(--text-xs);color:var(--warn);padding:6px 0" }, res.error || "Could not inspect this link."));
+        }
+      } catch (_) {
+        ytPreviewWrap.replaceChildren();
+      }
+    }, 600);
+  };
+  urlInput.addEventListener("input", inspectUrl);
+  urlInput.addEventListener("paste", () => setTimeout(inspectUrl, 50));
+
   const fileChipWrap = el("div");
   const browseBtn = el("button", { class: "btn", type: "button" }, "Choose a file");
   const dropHint = el("div", { class: "drop-hint" },
-    "or drop a video file anywhere on this page", browseBtn);
+    "or drop a video file anywhere on this page (MP4, MKV, MOV, WebM, AVI)", browseBtn);
   const filePicker = el("input", {
     class: "visually-hidden", type: "file",
-    accept: "video/*,.mp4,.mov,.mkv,.webm", "aria-hidden": "true", tabindex: "-1",
+    accept: "video/*,.mp4,.mov,.mkv,.webm,.avi", "aria-hidden": "true", tabindex: "-1",
   });
   browseBtn.addEventListener("click", () => filePicker.click());
   filePicker.addEventListener("change", () => {
     if (filePicker.files[0]) takeFile(filePicker.files[0]);
   });
 
-  // ---- basics ----
-  const clipCount = el("input", {
-    class: "range", type: "range", min: "0", max: "12", value: "0",
-    "aria-label": "How many clips",
-  });
-  const clipCountOut = el("span", { class: "t-mono t-dim" }, "Automatic");
-  clipCount.addEventListener("input", () => {
-    o.count = Number(clipCount.value);
-    clipCountOut.textContent = o.count === 0 ? "Automatic" : String(o.count);
-  });
+  // ---- format / aspect ratio ----
+  const aspectSeg = segmented([
+    ["9:16", "9:16 Vertical (Shorts/Reels/TikTok)"],
+    ["1:1", "1:1 Square (Feed)"],
+    ["16:9", "16:9 Landscape (YouTube)"],
+  ], o.aspect, (v) => { o.aspect = v; });
 
-  const shapeRow = pickerRow("Clip shape", "Tall — Shorts, Reels, TikTok",
-    async () => {
-      const v = await pickShape(o.aspect);
-      if (v !== null) {
-        o.aspect = v;
-        shapeRow.btn.textContent = {
-          "9:16": "Tall — Shorts, Reels, TikTok",
-          "1:1": "Square", "16:9": "Widescreen",
-        }[v] || v;
+  // ---- duration selector pills ----
+  const durPills = el("div", { class: "pill-group" });
+  const customDurRow = el("div", { class: "field-inline", style: "display:none;margin-top:8px" });
+  const lenMin = el("input", { class: "input", type: "number", min: "5", max: "180", value: "30" });
+  const lenMax = el("input", { class: "input", type: "number", min: "5", max: "180", value: "60" });
+  customDurRow.append(lenMin, "to", lenMax, "seconds");
+  lenMin.addEventListener("input", () => { o.clipMin = lenMin.value; });
+  lenMax.addEventListener("input", () => { o.clipMax = lenMax.value; });
+
+  const durPresets = [
+    { label: "15–30s (Hook)", min: "15", max: "30" },
+    { label: "30–60s (Standard)", min: "30", max: "60", active: true },
+    { label: "60–90s (In-depth)", min: "60", max: "90" },
+    { label: "Custom Range", custom: true },
+  ];
+  durPresets.forEach((p) => {
+    const btn = el("button", {
+      class: `pill-btn ${p.active ? "is-active" : ""}`,
+      type: "button",
+    }, p.label);
+    btn.addEventListener("click", () => {
+      durPills.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      if (p.custom) {
+        customDurRow.style.display = "";
+        o.clipMin = lenMin.value;
+        o.clipMax = lenMax.value;
+      } else {
+        customDurRow.style.display = "none";
+        o.clipMin = p.min;
+        o.clipMax = p.max;
       }
     });
+    durPills.append(btn);
+  });
 
-  const musicRow = pickerRow("Background music", "No music", async () => {
+  // ---- clip count pills ----
+  const countPills = el("div", { class: "pill-group" });
+  const customCountRow = el("div", { class: "field-inline", style: "display:none;margin-top:8px" });
+  const clipCount = el("input", { class: "range", type: "range", min: "1", max: "15", value: "5" });
+  const clipCountOut = el("span", { class: "t-mono t-dim" }, "5");
+  customCountRow.append(clipCount, clipCountOut);
+  clipCount.addEventListener("input", () => {
+    o.count = Number(clipCount.value);
+    clipCountOut.textContent = String(o.count);
+  });
+
+  const countPresets = [
+    { label: "Auto (AI picks)", count: 0, active: true },
+    { label: "3 Clips", count: 3 },
+    { label: "5 Clips", count: 5 },
+    { label: "10 Clips", count: 10 },
+    { label: "Custom", custom: true },
+  ];
+  countPresets.forEach((p) => {
+    const btn = el("button", {
+      class: `pill-btn ${p.active ? "is-active" : ""}`,
+      type: "button",
+    }, p.label);
+    btn.addEventListener("click", () => {
+      countPills.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("is-active"));
+      btn.classList.add("is-active");
+      if (p.custom) {
+        customCountRow.style.display = "";
+        o.count = Number(clipCount.value);
+      } else {
+        customCountRow.style.display = "none";
+        o.count = p.count;
+      }
+    });
+    countPills.append(btn);
+  });
+
+  // ---- quality / resolution ----
+  const qualitySeg = segmented([
+    ["1080p", "1080p Full HD (Recommended)"],
+    ["720p", "720p HD (Faster encode)"],
+  ], o.quality, (v) => { o.quality = v; });
+
+  // ---- pacing ----
+  const pacingSel = el("select", { class: "select", "aria-label": "Pacing" },
+    el("option", { value: "", selected: "" }, "Balanced — natural flow"),
+    el("option", { value: "0.15" }, "Relaxed — keep pauses"),
+    el("option", { value: "0.85" }, "Snappy — tight cuts"));
+  pacingSel.addEventListener("change", () => { o.pacing = pacingSel.value; });
+
+  // ---- feature toggles ----
+  const faceToggle = toggle(true, "Face Tracking & Smart Speaker Crop");
+  faceToggle.input.addEventListener("change", () => { o.faceTracking = faceToggle.input.checked; });
+
+  const subsToggle = toggle(true, "Burn Animated Subtitles");
+  subsToggle.input.addEventListener("change", () => {
+    o.captions = subsToggle.input.checked;
+    presetRow.node.style.display = o.captions ? "" : "none";
+    fontRow.node.style.display = o.captions ? "" : "none";
+  });
+
+  const viralToggle = toggle(true, "AI Viral Moments Detection (Ollama)");
+  const metaToggle = toggle(true, "AI Titles, Descriptions & Hashtags");
+  metaToggle.input.addEventListener("change", () => { o.metadata = metaToggle.input.checked; });
+
+  const styleToggle = toggle(true, "Polish Clip Timing & Cuts");
+
+  // ---- caption style & font pickers ----
+  const presetRow = pickerRow("Subtitle Preset", "Style's default", async () => {
+    const v = await pickPreset(o.preset, o.font);
+    if (v !== null) {
+      o.preset = v;
+      presetRow.btn.textContent = v.replace(/-/g, " ");
+    }
+  });
+  const fontRow = pickerRow("Subtitle Font", "Style's own font", async () => {
+    const v = await pickFont(o.font, o.preset);
+    if (v !== null) {
+      o.font = v;
+      fontRow.btn.textContent = v || "Style's own font";
+    }
+  });
+
+  // ---- background music ----
+  const musicToggle = toggle(false, "Add Background Music");
+  const musicArea = el("div", { style: "display:none;margin-top:8px" });
+  const musicRow = pickerRow("Music Track", "Surprise me (Random)", async () => {
     const v = await pickMusic(o.music);
     if (v !== null) {
       o.music = v;
@@ -225,61 +408,27 @@ function renderHome() {
           : v === "random" ? "Surprise me" : v;
     }
   });
+  o.music = "random";
   const musicVol = el("input", {
     class: "range", type: "range", min: "-40", max: "-10", value: "-18",
     "aria-label": "Music loudness",
   });
   musicVol.addEventListener("input", () => { o.musicVol = Number(musicVol.value); });
+  musicArea.append(musicRow.node, field("Music Volume", musicVol));
 
-  const lenMin = el("input", { class: "input", type: "number", min: "5",
-                               max: "180", placeholder: "30" });
-  const lenMax = el("input", { class: "input", type: "number", min: "5",
-                               max: "180", placeholder: "60" });
-  lenMin.addEventListener("input", () => { o.clipMin = lenMin.value; });
-  lenMax.addEventListener("input", () => { o.clipMax = lenMax.value; });
-
-  const pacingSel = el("select", { class: "select", "aria-label": "Pacing" },
-    el("option", { value: "", selected: "" }, "Leave as-is"),
-    el("option", { value: "0.15" }, "Relaxed — keep natural pauses"),
-    el("option", { value: "0.5" }, "Balanced"),
-    el("option", { value: "0.85" }, "Snappy — tight cuts"));
-  pacingSel.addEventListener("change", () => { o.pacing = pacingSel.value; });
-
-  // ---- style & branding ----
-  const presetRow = pickerRow("Caption style", "Style's default", async () => {
-    const v = await pickPreset(o.preset, o.font);
-    if (v !== null) {
-      o.preset = v;
-      presetRow.btn.textContent = v.replace(/-/g, " ");
-    }
-  });
-  const fontRow = pickerRow("Caption font", "Style's own font", async () => {
-    const v = await pickFont(o.font, o.preset);
-    if (v !== null) {
-      o.font = v;
-      fontRow.btn.textContent = v || "Style's own font";
-    }
+  musicToggle.input.addEventListener("change", () => {
+    musicArea.style.display = musicToggle.input.checked ? "" : "none";
+    o.music = musicToggle.input.checked ? "random" : "";
   });
 
-  const hiToggle = toggle(false, "Custom highlight color");
-  const hiColor = el("input", { class: "color-input", type: "color",
-                                value: "#ffd230", "aria-label": "Highlight color" });
-  hiColor.style.display = "none";
-  hiToggle.input.addEventListener("change", () => {
-    hiColor.style.display = hiToggle.input.checked ? "" : "none";
-    o.highlight = hiToggle.input.checked ? hiColor.value : "";
-  });
-  hiColor.addEventListener("input", () => { o.highlight = hiColor.value; });
-
+  // ---- watermark & branding ----
   const ctaInput = el("input", {
     class: "input", type: "text", maxlength: "60",
     placeholder: "e.g. Follow for more",
   });
   ctaInput.addEventListener("input", () => { o.cta = ctaInput.value.trim(); });
 
-  // watermark
-  const wmText = el("input", { class: "input", type: "text", maxlength: "40",
-                               placeholder: "@yourhandle" });
+  const wmText = el("input", { class: "input", type: "text", maxlength: "40", placeholder: "@yourhandle" });
   wmText.addEventListener("input", () => { o.wmText = wmText.value.trim(); });
   const wmLogoBtn = el("button", { class: "btn", type: "button" }, "Choose a logo");
   const wmLogoIn = el("input", {
@@ -297,14 +446,12 @@ function renderHome() {
       wmLogoBtn.textContent = f.name;
     } catch (e) { toast(e.message, "is-error"); }
   });
-  const wmRows = { text: field("Watermark text", wmText),
-                   image: field("Logo image", wmLogoBtn) };
+  const wmRows = { text: field("Watermark text", wmText), image: field("Logo image", wmLogoBtn) };
   const wmPosRow = pickerRow("Watermark position", "Bottom right", async () => {
     const v = await pickPosition(o.wmPos);
     if (v !== null) {
       o.wmPos = v;
-      wmPosRow.btn.textContent =
-        v.replace("-", " ").replace(/^\w/, (c) => c.toUpperCase());
+      wmPosRow.btn.textContent = v.replace("-", " ").replace(/^\w/, (c) => c.toUpperCase());
     }
   });
   const wmSeg = segmented([["off", "None"], ["text", "Text"], ["image", "Logo"]],
@@ -316,69 +463,54 @@ function renderHome() {
     });
   wmRows.image.style.display = "none";
 
-  const subsRow = pickerRow("If the video already has subtitles",
-    "Decide for me", async () => {
-      const v = await pickSubsMode(o.subsMode);
-      if (v !== null) {
-        o.subsMode = v;
-        subsRow.btn.textContent = {
-          "": "Decide for me", replace: "Swap them out",
-          keep: "Keep the originals", ignore: "Caption anyway",
-        }[v];
-      }
-    });
-  const profileRow = pickerRow("Editing style", "Standard", async () => {
-    const v = await pickProfile(o.profile);
-    if (v !== null) {
-      o.profile = v;
-      profileRow.btn.textContent = v || "Standard";
-    }
-  });
-
-  const styleToggle = toggle(true, "Polish clip timing");
-  const viralToggle = toggle(true, "Look for big moments");
-
   const makeBtn = el("button", { class: "btn btn-primary btn-lg", type: "button" },
     "Make clips");
   makeBtn.addEventListener("click", start);
   urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
 
   view.append(el("section", { class: "screen" },
+    statsRow,
     el("div", { class: "hero" },
-      el("div", { class: "t-label" }, "New clips"),
-      el("h1", { class: "t-display" }, "Turn one video into short clips"),
+      sysPill,
+      el("div", { class: "t-label" }, "ClipForge AI"),
+      el("h1", { class: "t-display" }, "Turn Long Videos into Viral Short Clips"),
       el("p", { class: "hero-sub" },
-        "Paste a link or drop a file. ClipForge finds the best moments, ",
-        "crops them for phones, and adds captions."),
-      el("div", { class: "source-row" }, urlInput, dropHint, fileChipWrap),
-      el("details", { class: "opts" },
-        el("summary", {}, "Options"),
+        "Free, local AI video clipper. Analyzes speech, detects viral moments, reframes faces to 9:16 vertical, and generates animated captions."),
+      el("div", { class: "source-row" }, urlInput, ytPreviewWrap, dropHint, fileChipWrap),
+
+      el("details", { class: "opts", open: true },
+        el("summary", {}, "Processing Preferences"),
         el("div", { class: "opts-body" },
-          field("How many clips", clipCount, clipCountOut),
-          shapeRow.node,
-          musicRow.node,
-          field("Music loudness", musicVol),
-          field("Clip length (seconds)",
-            el("div", { class: "field-inline" }, lenMin, "to", lenMax)),
-          field("Pacing", pacingSel))),
-      el("details", { class: "opts" },
-        el("summary", {}, "Style & branding"),
+          field("Format & Aspect Ratio", aspectSeg),
+          field("Quality / Resolution", qualitySeg),
+          field("Target Clip Duration", durPills, customDurRow),
+          field("Number of Clips", countPills, customCountRow),
+          field("Pacing & Flow", pacingSel))),
+
+      el("details", { class: "opts", open: true },
+        el("summary", {}, "AI Capabilities & Styling"),
         el("div", { class: "opts-body" },
+          el("div", { class: "field" },
+            el("label", {}, "AI Features"),
+            faceToggle.node,
+            subsToggle.node,
+            viralToggle.node,
+            metaToggle.node,
+            styleToggle.node),
           presetRow.node,
           fontRow.node,
-          field("Ending message", ctaInput),
-          el("div", { class: "field" }, el("label", {}, "Highlight"),
-            hiToggle.node, hiColor),
+          el("div", { class: "field" },
+            el("label", {}, "Audio & Music"),
+            musicToggle.node,
+            musicArea),
+          field("Call to Action (Ending Message)", ctaInput),
           field("Watermark", wmSeg),
-          wmRows.text, wmRows.image, wmPosRow.node,
-          subsRow.node,
-          profileRow.node,
-          el("div", { class: "field" }, el("label", {}, "Extras"),
-            styleToggle.node, viralToggle.node))),
-      el("div", {}, makeBtn)),
+          wmRows.text, wmRows.image, wmPosRow.node)),
+
+      el("div", { style: "margin-top:16px" }, makeBtn)),
     filePicker, wmLogoIn));
 
-  // drag & drop over the whole page
+  // drag & drop over page
   const onDragOver = (e) => { e.preventDefault(); document.body.classList.add("dragging"); };
   const onDragLeave = (e) => {
     if (!e.relatedTarget) document.body.classList.remove("dragging");
@@ -400,21 +532,23 @@ function renderHome() {
 
   async function takeFile(file) {
     filePath = "";
-    const status = el("span", { class: "file-chip" }, `Uploading ${file.name}… 0%`);
+    urlInput.value = "";
+    ytPreviewWrap.replaceChildren();
+    const status = el("span", { class: "file-chip" }, `Uploading ${file.name} (${fmtBytes(file.size)})… 0%`);
     fileChipWrap.replaceChildren(status);
     try {
       const { path } = await uploadFile("/api/uploads", file, (f) => {
-        status.textContent = `Uploading ${file.name}… ${Math.round(f * 100)}%`;
+        status.textContent = `Uploading ${file.name} (${fmtBytes(file.size)})… ${Math.round(f * 100)}%`;
       });
       filePath = path;
-      urlInput.value = "";
       fileChipWrap.replaceChildren(el("span", { class: "file-chip" },
-        `\u{1F3AC} ${file.name}`,
+        `\u{1F3AC} ${file.name} (${fmtBytes(file.size)})`,
         el("button", {
           class: "btn btn-ghost btn-sm", type: "button",
           "aria-label": "Remove file",
           onclick: () => { filePath = ""; fileChipWrap.replaceChildren(); },
         }, "✕")));
+      toast(`Selected ${file.name}`, "is-ok");
     } catch (e) {
       fileChipWrap.replaceChildren();
       toast(e.message, "is-error");
@@ -429,13 +563,17 @@ function renderHome() {
       return;
     }
     makeBtn.disabled = true;
-    makeBtn.textContent = "Starting…";
+    makeBtn.textContent = "Starting pipeline…";
     try {
       const { run_id } = await api.post("/api/runs", {
         source,
         target_count: o.count || null,
         aspect: o.aspect,
-        preset: o.preset || null,
+        quality: o.quality,
+        face_tracking: o.faceTracking,
+        generate_captions: o.captions,
+        generate_metadata: o.metadata,
+        preset: o.captions ? (o.preset || null) : "none",
         music: o.music,
         music_volume_db: o.musicVol,
         cta_text: o.cta,
@@ -494,6 +632,10 @@ function renderRun(runId) {
   const eta = el("span", { class: "t-mono" }, "");
   const canvas = el("canvas");
   const stageList = el("div", { class: "stage-list" });
+  const logEntries = el("div", { class: "log-console" });
+  const logDetails = el("details", { class: "log-console-wrap", open: true },
+    el("summary", { class: "t-label", style: "cursor:pointer;margin-bottom:8px" }, "Live Execution Log"),
+    logEntries);
   const cancelBtn = el("button", { class: "btn btn-ghost", type: "button" }, "Stop");
 
   view.append(el("section", { class: "screen" },
@@ -505,18 +647,21 @@ function renderRun(runId) {
       el("div", { class: "progress-readout" }, eta),
       detail,
       stageList,
+      logDetails,
       cancelBtn)));
 
   const dm = createDotMatrix(canvas, { variant: "progress" });
   dm.update({ fraction: 0, state: "running" });
 
+  let lastLoggedMsg = "";
   const apply = (snap) => {
     const stages = snap.stages || [];
     const running = stages.filter((s) => s.state === "running").at(-1);
     const lastDone = stages.filter((s) => s.state === "done").at(-1);
     const current = running || lastDone;
     if (current) stageTitle.textContent = current.label;
-    detail.textContent = (running && (running.message || running.current_file)) || " ";
+    const msg = (running && (running.message || running.current_file)) || "";
+    detail.textContent = msg || " ";
     pct.textContent = String(Math.round((snap.overall || 0) * 100));
     eta.textContent = snap.overall_eta != null
       ? `about ${fmtClock(snap.overall_eta)} left · ${fmtClock(snap.elapsed)} elapsed`
@@ -528,6 +673,16 @@ function renderRun(runId) {
         class: `stage-row ${s.state === "running" ? "is-running"
           : s.state === "done" ? "is-done" : ""}`,
       }, s.label)));
+
+    if (msg && msg !== lastLoggedMsg) {
+      lastLoggedMsg = msg;
+      const now = new Date().toLocaleTimeString();
+      const line = el("div", { class: "log-line" },
+        el("span", { class: "log-time" }, now),
+        el("span", { class: "log-msg" }, `${current ? current.label : "Pipeline"}: ${msg}`));
+      logEntries.append(line);
+      logEntries.scrollTop = logEntries.scrollHeight;
+    }
   };
 
   const stop = watchRun(runId, {
@@ -731,6 +886,27 @@ function clipCard(jobName, clip, dots) {
     dots.push(miniScore(mini, score));
   }
   if (clip.niche) scoreRow.append(el("span", { class: "badge" }, clip.niche));
+  if (clip.reason) scoreRow.append(el("span", { class: "badge badge-ok", title: "Engagement signal" }, clip.reason));
+
+  const meta = clip.metadata || {};
+  const metaBox = el("div", { class: "clip-meta-box" });
+  if (meta.description) {
+    metaBox.append(el("p", { class: "clip-desc-text" }, meta.description));
+  }
+  if (meta.hashtags && meta.hashtags.length) {
+    metaBox.append(el("div", { class: "clip-tags-row" },
+      ...meta.hashtags.map((t) => el("span", { class: "clip-tag" }, t))));
+  }
+  const copyTitleBtn = el("button", { class: "btn btn-ghost btn-sm", type: "button" }, "Copy Title");
+  copyTitleBtn.addEventListener("click", () => copyToClipboard(meta.title || `Clip ${clip.index + 1}`, copyTitleBtn));
+
+  const fullSocialText = `${meta.description || ''}\n\n${(meta.hashtags || []).join(' ')}`.trim();
+  const copySocialBtn = el("button", { class: "btn btn-ghost btn-sm", type: "button" }, "Copy Description & Tags");
+  copySocialBtn.addEventListener("click", () => copyToClipboard(fullSocialText, copySocialBtn));
+
+  if (meta.title || meta.description) {
+    metaBox.append(el("div", { class: "clip-copy-btns" }, copyTitleBtn, copySocialBtn));
+  }
 
   const srcStart = clip.original_source_start_s ?? clip.start;
   const srcEnd = clip.original_source_end_s ?? clip.end;
@@ -810,6 +986,7 @@ function clipCard(jobName, clip, dots) {
               `from ${fmtClock(srcStart)}–${fmtClock(srcEnd)}`)
           : null),
       scoreRow,
+      metaBox,
       el("div", { class: "clip-actions" },
         el("label", { class: "opt-toggle grow" }, "Auto-upload",
           el("span", { class: "switch" }, exclInput, el("span", { class: "knob" }))),
@@ -821,6 +998,10 @@ function clipCard(jobName, clip, dots) {
           class: "btn btn-sm", href: fileUrl("final.mp4"),
           download: `clip_${nn}.mp4`,
         }, "Download"),
+        el("a", {
+          class: "btn btn-sm btn-ghost", href: fileUrl("poster.jpg"),
+          download: `clip_${nn}_thumb.jpg`,
+        }, "Thumbnail"),
         keptBtn, delBtn)));
   return card;
 }
@@ -1623,10 +1804,20 @@ async function renderHistory() {
   const grid = el("div", { class: "history-grid" },
     ...Array.from({ length: 4 }, () =>
       el("div", { class: "skeleton", style: "height:120px" })));
-  const filterRow = el("div", { class: "field-inline",
-                               style: "flex-wrap:wrap" });
+
+  const searchIn = el("input", {
+    class: "input search-input", type: "text",
+    placeholder: "Search past runs by title or file…",
+  });
+  const statusTabs = el("div", { class: "field-inline" });
+  const filterRow = el("div", { class: "field-inline", style: "flex-wrap:wrap" });
   const backfillBtn = el("button", { class: "btn btn-ghost", type: "button" },
     "Tag older clips");
+
+  const toolbar = el("div", { class: "history-toolbar" },
+    searchIn,
+    statusTabs);
+
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
@@ -1635,40 +1826,117 @@ async function renderHistory() {
       el("div", { class: "field-inline" },
         backfillBtn,
         el("a", { class: "btn btn-ghost", href: "#/" }, "Make new clips"))),
-    filterRow, grid));
+    toolbar,
+    filterRow,
+    grid));
 
   let jobs = [];
   let activeNiche = null;
+  let activeStatus = "all";
+  let searchQuery = "";
+
+  searchIn.addEventListener("input", () => {
+    searchQuery = searchIn.value.trim().toLowerCase();
+    renderGrid();
+  });
+
+  const renderStatusTabs = () => {
+    const tabs = [
+      { label: "All Runs", value: "all" },
+      { label: "Completed", value: "done" },
+      { label: "Failed", value: "error" },
+    ];
+    statusTabs.replaceChildren(...tabs.map((t) => {
+      const b = el("button", {
+        class: `btn btn-sm ${activeStatus === t.value ? "btn-primary" : "btn-ghost"}`,
+        type: "button",
+      }, t.label);
+      b.addEventListener("click", () => {
+        activeStatus = t.value;
+        renderStatusTabs();
+        renderGrid();
+      });
+      return b;
+    }));
+  };
+  renderStatusTabs();
 
   const jobCard = (j) => {
     const when = j.name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
     const date = when
       ? `${when[3]}.${when[2]}.${when[1]} ${when[4]}:${when[5]}` : j.created;
-    return el("a", {
+
+    const delBtn = el("button", { class: "btn btn-danger btn-sm", type: "button" }, "Delete");
+    delBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ok = await confirmDialog({
+        title: `Delete project "${j.source || j.name}"?`,
+        body: "This permanently deletes all clips, thumbnails, subtitles, and files for this run.",
+        confirmLabel: "Delete Project",
+      });
+      if (!ok) return;
+      delBtn.disabled = true;
+      try {
+        await api.del(`/api/jobs/${encodeURIComponent(j.name)}`);
+        toast(`Deleted ${j.name}`, "is-ok");
+        await load();
+      } catch (err) {
+        toast(err.message, "is-error");
+        delBtn.disabled = false;
+      }
+    });
+
+    const zipLink = el("a", {
+      class: "btn btn-ghost btn-sm",
+      href: `/api/jobs/${encodeURIComponent(j.name)}/zip`,
+      onclick: (e) => e.stopPropagation(),
+    }, "ZIP");
+
+    const card = el("a", {
       class: "card card-hover history-card",
       href: `#/results/${encodeURIComponent(j.name)}`,
     },
       el("div", { class: "t-mono t-dim" }, date),
       el("div", { class: "history-src" }, j.source || j.name),
-      el("div", { class: "field-inline" },
+      el("div", { class: "field-inline", style: "flex-wrap:wrap" },
         el("span", { class: "badge" }, `${j.kept} of ${j.clip_count} clips kept`),
         ...(j.niches || []).map((n) => el("span", { class: "badge" }, n)),
         j.status && j.status !== "done"
           ? el("span", { class: "badge badge-warn" }, j.status)
-          : null));
+          : null),
+      el("div", { class: "field-inline", style: "margin-top:8px" }, zipLink, delBtn));
+
+    return card;
   };
 
   const renderGrid = () => {
-    const shown = activeNiche
-      ? jobs.filter((j) => (j.niches || []).includes(activeNiche)) : jobs;
-    if (!shown.length) {
-      grid.replaceChildren(el("div", { class: "card" },
-        el("p", { class: "t-dim", style: "margin:0" }, activeNiche
-          ? "No runs with clips in that niche."
+    let list = jobs;
+    if (activeStatus === "done") {
+      list = list.filter((j) => j.status === "done");
+    } else if (activeStatus === "error") {
+      list = list.filter((j) => j.status && j.status !== "done");
+    }
+    if (activeNiche) {
+      list = list.filter((j) => (j.niches || []).includes(activeNiche));
+    }
+    if (searchQuery) {
+      list = list.filter((j) =>
+        (j.source || "").toLowerCase().includes(searchQuery)
+        || j.name.toLowerCase().includes(searchQuery)
+        || (j.niches || []).some((n) => n.toLowerCase().includes(searchQuery))
+      );
+    }
+
+    if (!list.length) {
+      grid.replaceChildren(el("div", { class: "card", style: "grid-column:1/-1" },
+        el("p", { class: "t-dim", style: "margin:0" },
+          searchQuery ? "No runs match your search query."
+          : activeNiche ? "No runs with clips in that niche."
           : "No clips yet — paste a link on the first screen to start.")));
       return;
     }
-    grid.replaceChildren(...shown.map(jobCard));
+    grid.replaceChildren(...list.map(jobCard));
   };
 
   const renderFilters = () => {
@@ -1686,7 +1954,7 @@ async function renderHistory() {
       });
       return b;
     };
-    filterRow.replaceChildren(chip("All", null),
+    filterRow.replaceChildren(chip("All Niches", null),
       ...niches.map((n) => chip(n, n)));
   };
 

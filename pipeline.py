@@ -20,6 +20,7 @@ from pathlib import Path
 
 from config import ROOT, load_config
 from errors import ClipForgeError, JobCancelled
+import ffutil
 from ffutil import verify_ffmpeg
 from logutil import add_file_handler, get_logger, remove_file_handler, stage_timer
 from schemas import validate
@@ -435,6 +436,17 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
         else:
             cut_path = cut_mod.cut_clip(source, out_start, out_end,
                                         clip_dir / "cut.mp4", cfg)
+        target_w = cfg.get("reframe", {}).get("output", {}).get("width", 1080)
+        if target_w < 1080:  # 720p mode: ensure 16:9 is scaled down to 720p height if source is taller
+            try:
+                sinfo = reframe_mod.probe(cut_path)
+                if sinfo["height"] > 720:
+                    scaled_path = clip_dir / "scaled_16_9.mp4"
+                    ffutil.run_ffmpeg(["-i", str(cut_path), "-vf", "scale=-2:720",
+                                       "-c:v", "libx264", "-c:a", "copy", str(scaled_path)])
+                    scaled_path.replace(cut_path)
+            except Exception as e:
+                log.warning("could not scale 16:9 cut to 720p (%s) — keeping source res", e)
         source_for_captions, metrics = cut_path, {"aspect": "16:9",
                                                   "passthrough": True}
     elif multi:
@@ -479,6 +491,8 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                  for w in transcript["words"]
                  if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
         cap_kwargs = captions_mod.cta_from_cfg(cfg)
+    if cfg.get("captions", {}).get("enabled") is False or preset == "none":
+        cap_kwargs["captions_enabled"] = False
     final = captions_mod.caption_clip(source_for_captions, words,
                                       clip_dir / "final.mp4", cfg,
                                       preset_name=preset, **cap_kwargs)
@@ -526,7 +540,14 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
     # content duration (drives virality/rescore)
     duration = edit_plan["output_duration"] if edit_plan else round(out_end - out_start, 3)
     clip_text = " ".join(w["word"] for w in words)
-    meta = metadata_mod.generate_metadata(clip_text, cand["hook"], cfg, provider)
+    if cfg.get("metadata", {}).get("enabled") is False:
+        meta = {
+            "title": f"Clip {i + 1}",
+            "description": f"Clip {i + 1} from {cand.get('hook', 'video')}.",
+            "hashtags": ["#shorts", "#reels", "#viral", "#video"]
+        }
+    else:
+        meta = metadata_mod.generate_metadata(clip_text, cand["hook"], cfg, provider)
     if music_attr:  # license requires attribution in the description
         meta = {**meta, "description": f"{meta['description']} {music_attr}"}
     credit = str(cfg.get("metadata", {}).get("credit_text", "")).strip()
@@ -666,6 +687,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     cfg = load_config()
+    source: str = ""
     if a.sample:
         from sample_source import resolve_sample
         source = str(resolve_sample(cfg))

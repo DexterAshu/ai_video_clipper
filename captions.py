@@ -315,6 +315,9 @@ def caption_clip(video_path: str | Path, words: list[dict],
       whip_times — 'whip' transition blur bursts at these clip times."""
     cfg = cfg or load_config()
     preset_name = preset_name or cfg["captions"]["preset"]
+    if preset_name == "none" or cfg.get("captions", {}).get("enabled") is False:
+        captions_enabled = False
+        preset_name = cfg["captions"]["preset"]
     if preset_name not in cfg["captions"]["presets"]:
         raise CaptionError(f"unknown caption preset '{preset_name}'")
     video_path, out_path = Path(video_path), Path(out_path)

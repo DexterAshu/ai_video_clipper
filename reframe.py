@@ -300,8 +300,14 @@ def reframe_clip(source: str | Path, start: float, end: float,
     dur = end - start
     if dur <= 0:
         raise ReframeError(f"invalid range: start={start} end={end}")
-    ow, oh = ((rcfg["output"]["width"], rcfg["output"]["height"])
-              if aspect == "9:16" else (1080, 1080))
+    ow = int(rcfg.get("output", {}).get("width", 1080))
+    oh = int(rcfg.get("output", {}).get("height", 1920))
+    if aspect == "9:16":
+        pass  # ow, oh as configured
+    elif aspect == "1:1":
+        oh = ow
+    else:
+        ow, oh = (1920, 1080) if ow >= 1080 else (1280, 720)
     cw, ch, y0 = crop_geometry(w, h, aspect)
     # REPLACE mode: exclude a bottom subtitle band by cropping only the top
     # (1 - ratio) of the frame, then recompute the aspect crop inside it.
@@ -316,17 +322,20 @@ def reframe_clip(source: str | Path, start: float, end: float,
     proxy_h = int(rcfg.get("proxy_height", 360))
     proxy_fps = float(rcfg.get("proxy_fps", 12))
     proxy = out_path.with_name(out_path.stem + "_proxy.mp4")
-    try:
-        _build_proxy(source, start, dur, proxy, proxy_h, proxy_fps)
-        pinfo = probe(proxy)
-        pw = int(pinfo["width"])
-        targets, stats = track_targets(proxy, rcfg, pw, int(pinfo["height"]),
-                                       every=1)
-    except Exception as e:  # noqa: BLE001 — tracking failure → center fallback
-        log.warning("tracking failed (%s) — center crop with headroom", e)
+    if rcfg.get("tracking") is False or rcfg.get("face_tracking") is False:
         targets, stats, pw = [], {"face": 0, "motion": 0, "center": 1}, w
-    finally:
-        proxy.unlink(missing_ok=True)
+    else:
+        try:
+            _build_proxy(source, start, dur, proxy, proxy_h, proxy_fps)
+            pinfo = probe(proxy)
+            pw = int(pinfo["width"])
+            targets, stats = track_targets(proxy, rcfg, pw, int(pinfo["height"]),
+                                           every=1)
+        except Exception as e:  # noqa: BLE001 — tracking failure → center fallback
+            log.warning("tracking failed (%s) — center crop with headroom", e)
+            targets, stats, pw = [], {"face": 0, "motion": 0, "center": 1}, w
+        finally:
+            proxy.unlink(missing_ok=True)
 
     center = w / 2.0
     half = cw / 2.0

@@ -187,6 +187,75 @@ def list_jobs():
     return {"jobs": out}
 
 
+@router.get("/api/dashboard/stats")
+def dashboard_stats():
+    """Aggregated project metrics for the dashboard view."""
+    from server import jobs as srv_jobs
+    root = output_root()
+    jobs_list = []
+    total_clips = 0
+    kept_clips = 0
+    completed = 0
+    failed = 0
+    storage_bytes = 0
+
+    if root.exists():
+        storage_bytes = dir_size(root)
+        for d in sorted((p for p in root.iterdir() if p.is_dir()), reverse=True):
+            jp = d / "job.json"
+            if not jp.exists():
+                continue
+            try:
+                data = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            clips = data.get("clips", [])
+            total_clips += len(clips)
+            k = sum(1 for c in clips if c.get("kept"))
+            kept_clips += k
+            st = data.get("status", "")
+            if st == "done":
+                completed += 1
+            elif st in ("error", "failed"):
+                failed += 1
+            jobs_list.append({
+                "name": d.name,
+                "created": data.get("created", ""),
+                "source": data.get("source", ""),
+                "status": st,
+                "clip_count": len(clips),
+                "kept": k,
+            })
+
+    active_count = sum(1 for h in srv_jobs.REGISTRY.values() if h.state == "running")
+
+    return {
+        "total_videos": len(jobs_list),
+        "total_clips": total_clips,
+        "kept_clips": kept_clips,
+        "active_jobs": active_count,
+        "completed_jobs": completed,
+        "failed_jobs": failed,
+        "storage_bytes": storage_bytes,
+        "recent_jobs": jobs_list[:5],
+    }
+
+
+@router.delete("/api/jobs/{job_name}")
+def delete_job(job_name: str):
+    """Delete a complete past job directory from disk."""
+    root = output_root()
+    job_dir = (root / job_name).resolve()
+    if not job_dir.is_relative_to(root) or not job_dir.is_dir():
+        raise HTTPException(404, "That job cannot be found.")
+    try:
+        shutil.rmtree(job_dir)
+        invalidate_all_clips_cache()
+    except OSError as e:
+        raise HTTPException(500, friendly(e, "Deleting that job"))
+    return {"status": "deleted", "job": job_name}
+
+
 @router.get("/api/jobs/{job_name}")
 def get_job(job_name: str):
     job = _load_job_record(job_name)
@@ -312,6 +381,15 @@ def zip_job(job_name: str):
 @router.get("/api/files/{job_name}/{clip}/{name}")
 def get_file(job_name: str, clip: str, name: str):
     p = safe_job_path(job_name, clip, name)
+    if name in ("poster.jpg", "thumbnail.jpg") and not p.exists():
+        final_mp4 = safe_job_path(job_name, clip, "final.mp4")
+        if final_mp4.exists():
+            try:
+                from ffutil import run_ffmpeg
+                run_ffmpeg(["-ss", "1.0", "-i", str(final_mp4),
+                            "-vframes", "1", "-q:v", "2", str(p)])
+            except Exception as e:
+                log.warning("could not extract thumbnail for %s/%s: %s", job_name, clip, e)
     if p.suffix.lower() not in _FILE_SUFFIXES or not p.is_file():
         raise HTTPException(404, "File not found.")
     return FileResponse(str(p))  # FileResponse handles Range → video seeking

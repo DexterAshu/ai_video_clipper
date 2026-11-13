@@ -1,0 +1,24 @@
+# ClipForge Local Configuration Template
+# Copy this file to config.local.yaml to customize your local machine settings.
+# config.local.yaml is automatically ignored by Git and deep-merged over config.yaml.
+
+# FFmpeg binary paths (use forward slashes or backslashes)
+ffmpeg:
+  binary: tools/ffmpeg/bin/ffmpeg.exe
+  ffprobe_binary: tools/ffmpeg/bin/ffprobe.exe
+
+# Local AI LLM provider configuration
+llm:
+  provider: ollama
+  ollama_model: llama3.2:3b
+  ollama_base_url: http://localhost:11434
+
+# Speech transcription settings
+whisper:
+  model_override: small    # Options: tiny, base, small, medium, large-v3
+
+# Hardware encoding settings
+render:
+  compute: auto            # auto | cuda | cpu
+  use_nvenc: auto          # auto | true | false
+

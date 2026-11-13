@@ -68,19 +68,35 @@ def _semver(v: str) -> tuple:
 
 
 def _get_json(url: str, timeout: int = 8):
+    import json
     import os
+    import urllib.error
+    import urllib.request
 
-    import requests
-    headers = {"User-Agent": "ClipForge-updater",
-               "Accept": "application/vnd.github+json"}
+    headers = {
+        "User-Agent": "ClipForge-updater",
+        "Accept": "application/vnd.github+json",
+    }
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, headers=headers, timeout=timeout)
-    if r.status_code == 403 and "rate limit" in r.text.lower():
-        raise RuntimeError("GitHub rate limit hit — will retry later")
-    r.raise_for_status()
-    return r.json()
+
+    try:
+        import requests
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code == 403 and "rate limit" in r.text.lower():
+            raise RuntimeError("GitHub rate limit hit — will retry later")
+        r.raise_for_status()
+        return r.json()
+    except (ImportError, ModuleNotFoundError):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                raise RuntimeError("GitHub rate limit hit — will retry later")
+            raise
 
 
 def _latest_release() -> dict | None:

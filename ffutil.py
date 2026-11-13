@@ -72,7 +72,8 @@ def run_ffmpeg(args: list[str], timeout: int = 1800,
         if progress_label:
             _run_with_progress(cmd, timeout, progress_label)
             return
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired as e:
         raise FFmpegError(f"ffmpeg timed out after {timeout}s") from e
     except FileNotFoundError as e:
@@ -89,7 +90,8 @@ def _run_with_progress(cmd: list[str], timeout: int, label: str) -> None:
     # stays an intact pair (splitting at 3 previously fed "-stats_period" to -v).
     cmd = cmd[:4] + ["-stats_period", "30", "-progress", "pipe:1"] + cmd[4:]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True)
+                            stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace")
     deadline = time.monotonic() + timeout
     try:
         for line in proc.stdout:  # type: ignore[union-attr]
@@ -112,7 +114,8 @@ def probe(path: str | Path) -> dict:
     """ffprobe → {duration, width, height, fps, vcodec, acodec, has_audio}."""
     cmd = [ffprobe_bin(), "-v", "error", "-print_format", "json",
            "-show_format", "-show_streams", str(path)]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120)
     if r.returncode != 0:
         raise FFmpegError(f"ffprobe failed for {path}",
                           detail=(r.stderr or "")[-500:])
@@ -143,7 +146,8 @@ def probe_audio(path: str | Path) -> dict:
     for standalone audio inputs like a TTS voice reference wav."""
     cmd = [ffprobe_bin(), "-v", "error", "-print_format", "json",
            "-show_format", "-show_streams", str(path)]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120)
     if r.returncode != 0:
         raise FFmpegError(f"ffprobe failed for {path}",
                           detail=(r.stderr or "")[-500:])
@@ -158,7 +162,7 @@ def probe_audio(path: str | Path) -> dict:
 
 def ffmpeg_version() -> str:
     r = subprocess.run([ffmpeg_bin(), "-version"], capture_output=True, text=True,
-                       timeout=30)
+                       encoding="utf-8", errors="replace", timeout=30)
     first = (r.stdout or "").splitlines()[0] if r.stdout else ""
     return first.split(" ")[2] if len(first.split(" ")) > 2 else "unknown"
 
@@ -209,13 +213,14 @@ def _probe_nvenc() -> tuple[bool, str]:
             return False, "no NVIDIA GPU detected (nvidia-smi failed)"
         if "h264_nvenc" not in subprocess.run(
                 [fm, "-hide_banner", "-encoders"], capture_output=True,
-                text=True, timeout=30).stdout:
+                text=True, encoding="utf-8", errors="replace", timeout=30).stdout:
             return False, f"ffmpeg build has no h264_nvenc encoder ({fm})"
         r = subprocess.run(
             [fm, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-             "-i", "color=black:s=64x64", "-frames:v", "1",
+             "-i", "color=black:s=256x256", "-frames:v", "1",
              "-c:v", "h264_nvenc", "-f", "null", "-"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30)
         if r.returncode == 0:
             return True, ""
         return False, "NVENC init failed: " + _nvenc_error(r.stderr or "")

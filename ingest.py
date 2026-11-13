@@ -96,11 +96,11 @@ def ingest(source: str, job_dir: str | Path, cfg: dict | None = None,
     r = cfg["render"]
     if plan == "remux":
         run_ffmpeg(["-i", src_file] + limit
-                   + ["-c", "copy", "-movflags", "+faststart", video],
+                   + ["-c", "copy", "-sn", "-movflags", "+faststart", video],
                    timeout=timeout)
         log.info("normalize: remux fast path (h264/yuv420p/aac, no re-encode)")
     elif plan == "audio_only":
-        args = ["-i", src_file] + limit + ["-c:v", "copy"]
+        args = ["-i", src_file] + limit + ["-c:v", "copy", "-sn"]
         args += (["-c:a", "aac", "-b:a", r["audio_bitrate"]]
                  if info["has_audio"] else ["-an"])
         run_ffmpeg(args + ["-movflags", "+faststart", video], timeout=timeout)
@@ -109,7 +109,7 @@ def ingest(source: str, job_dir: str | Path, cfg: dict | None = None,
     else:
         args = ["-i", src_file] + limit + [
             "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", str(r["crf"]), "-pix_fmt", "yuv420p",
+            "-crf", str(r["crf"]), "-pix_fmt", "yuv420p", "-sn",
             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
         args += (["-c:a", "aac", "-b:a", r["audio_bitrate"]]
                  if info["has_audio"] else ["-an"])

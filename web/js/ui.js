@@ -21,6 +21,24 @@ export function toast(message, kind = "") {
   setTimeout(() => t.remove(), 5000);
 }
 
+export async function copyToClipboard(text, btn, successLabel = "Copied!") {
+  try {
+    await navigator.clipboard.writeText(text);
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = successLabel;
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.textContent = orig;
+        btn.disabled = false;
+      }, 2000);
+    }
+    toast("Copied to clipboard!", "is-ok");
+  } catch (err) {
+    toast("Could not copy to clipboard", "is-error");
+  }
+}
+
 export function fmtClock(sec) {
   if (sec === null || sec === undefined || !isFinite(sec)) return "—";
   const s = Math.max(0, Math.round(sec));

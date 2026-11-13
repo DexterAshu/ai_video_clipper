@@ -26,6 +26,9 @@ BRANDING_DIR = ROOT / "assets" / "user_branding"
 _CHUNK = 1024 * 1024
 
 
+_ALLOWED_VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".ts", ".m4v"}
+
+
 def _save_upload(file: UploadFile, dest_dir: Path, max_mb: int) -> Path:
     """Stream a multipart upload to disk with a size cap. Raises HTTPException
     with a plain-language message on failure."""
@@ -45,6 +48,9 @@ def _save_upload(file: UploadFile, dest_dir: Path, max_mb: int) -> Path:
                         413, f"That file is bigger than {max_mb} MB — "
                              "please use a smaller one.")
                 out.write(chunk)
+        if written == 0:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(422, "That file is empty (0 bytes) — please upload a valid video.")
     except HTTPException:
         dest.unlink(missing_ok=True)
         raise
@@ -56,6 +62,12 @@ def _save_upload(file: UploadFile, dest_dir: Path, max_mb: int) -> Path:
 
 @router.post("/api/uploads")
 def upload_video(file: UploadFile):
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _ALLOWED_VIDEO_EXTS:
+        raise HTTPException(
+            422,
+            f"Unsupported video format '{ext}'. Please upload MP4, MKV, MOV, WebM, or AVI.",
+        )
     cfg = load_config()
     max_mb = int(cfg.get("ui", {}).get("max_upload_mb", 4096))
     dest = _save_upload(file, UPLOAD_DIR, max_mb)
@@ -94,6 +106,46 @@ def upload_font(file: UploadFile):
         tmp.unlink(missing_ok=True)
 
 
+class InspectRequest(BaseModel):
+    url: str
+
+
+@router.post("/api/youtube/inspect")
+def inspect_youtube_url(req: InspectRequest):
+    """Fetch video metadata and thumbnail without downloading the video."""
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(422, "Please enter a YouTube or video URL.")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(422, "URL must start with http:// or https://")
+    try:
+        import yt_dlp
+        from ingest import ytdlp_network_opts
+        opts = {
+            "skip_download": True,
+            "quiet": True,
+            "noplaylist": True,
+            "no_warnings": True,
+            "extract_flat": False,
+        }
+        opts.update(ytdlp_network_opts())
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return {"valid": False, "error": "Could not inspect this video."}
+            return {
+                "valid": True,
+                "title": info.get("title") or "Untitled Video",
+                "duration": info.get("duration") or 0,
+                "thumbnail": info.get("thumbnail") or "",
+                "uploader": info.get("uploader") or info.get("channel") or "",
+                "view_count": info.get("view_count") or 0,
+                "description": (info.get("description") or "")[:240],
+            }
+    except Exception as e:
+        return {"valid": False, "error": friendly(e, "Inspecting this video")}
+
+
 class RunRequest(BaseModel):
     source: str                       # URL or a path returned by /api/uploads
     preset: str | None = None
@@ -109,6 +161,10 @@ class RunRequest(BaseModel):
     viral_upload: bool = False        # privacy gate: explicit opt-in only
     style_profile: str | None = None
     subs_mode: str | None = None
+    quality: str = "1080p"            # "1080p" or "720p"
+    face_tracking: bool = True        # smart speaker follower vs center crop
+    generate_captions: bool = True    # whether to burn captions
+    generate_metadata: bool = True    # whether to generate AI titles/tags
     # per-run style & branding (config.apply_run_options keys)
     cta_text: str = ""
     highlight_hex: str = ""
@@ -170,6 +226,16 @@ def _build_cfg(req: RunRequest, preset_opts: dict | None = None) -> dict:
     # allow_upload comes only from an explicit per-run opt-in; the config
     # default stays false (privacy gate).
     cfg["viral_v2"]["allow_upload"] = bool(req.viral_upload)
+    if req.quality == "720p":
+        cfg.setdefault("reframe", {}).setdefault("output", {})
+        cfg["reframe"]["output"] = {"width": 720, "height": 1280}
+    if not req.face_tracking:
+        cfg.setdefault("reframe", {})["tracking"] = False
+        cfg["reframe"]["face_tracking"] = False
+    if not req.generate_captions:
+        cfg.setdefault("captions", {})["enabled"] = False
+    if not req.generate_metadata:
+        cfg.setdefault("metadata", {})["enabled"] = False
     return cfg
 
 

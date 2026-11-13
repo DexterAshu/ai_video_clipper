@@ -71,7 +71,7 @@ def put_settings(req: SettingsRequest):
 @router.get("/api/system")
 def system_info():
     import updater
-    from ffutil import nvenc_available
+    from ffutil import ffmpeg_bin, nvenc_available
     from transcribe import gpu_available
     try:
         gpu = bool(gpu_available())
@@ -81,10 +81,43 @@ def system_info():
         gpu = nvenc = False
     speed = ("full" if gpu and nvenc else
              "partial" if gpu or nvenc else "cpu")
-    return {"version": updater.current_version(),
-            "cpu_count": os.cpu_count(),
-            "gpu_transcribe": gpu, "gpu_encode": nvenc,
-            "acceleration": speed}
+
+    gpu_name = ""
+    gpu_vram_gb = 0.0
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_vram_gb = round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 1)
+    except Exception:
+        pass
+
+    ollama_ok = False
+    ollama_model = ""
+    try:
+        import requests
+        r = requests.get("http://127.0.0.1:11434/api/tags", timeout=(0.2, 0.5))
+        if r.status_code == 200:
+            ollama_ok = True
+            models = [m.get("name") for m in r.json().get("models", [])]
+            cfg = load_config()
+            configured = cfg.get("llm", {}).get("ollama_model", "llama3.2:3b")
+            ollama_model = configured if configured in models else (models[0] if models else "")
+    except Exception:
+        pass
+
+    return {
+        "version": updater.current_version(),
+        "cpu_count": os.cpu_count(),
+        "gpu_transcribe": gpu,
+        "gpu_encode": nvenc,
+        "acceleration": speed,
+        "gpu_name": gpu_name or ("NVIDIA RTX GPU" if gpu or nvenc else "CPU only"),
+        "gpu_vram_gb": gpu_vram_gb,
+        "ollama_running": ollama_ok,
+        "ollama_model": ollama_model,
+        "ffmpeg_bin": str(ffmpeg_bin()),
+    }
 
 
 @router.get("/api/update")

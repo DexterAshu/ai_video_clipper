@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ffutil import ffmpeg_bin, ffprobe_bin
 from logutil import get_logger  # noqa: E402
 
 log = get_logger("synthsample")
@@ -88,7 +89,7 @@ def _tts_windows(text: str, wav_path: Path) -> bool:
 
 def _audio_duration(path: Path) -> float:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
          "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=60)
     return float(out.stdout.strip())
 
@@ -125,7 +126,7 @@ def make_sample(out_path: Path) -> Path:
         concat += f"[v{i}]"
     fc = ";".join(filters) + f";{concat}concat=n={len(SCENES)}:v=1:a=0[vout]"
 
-    cmd = (["ffmpeg", "-y", "-v", "error"] + inputs + audio_in +
+    cmd = ([ffmpeg_bin(), "-y", "-v", "error"] + inputs + audio_in +
            ["-filter_complex", fc, "-map", "[vout]", "-map", f"{len(SCENES)}:a",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k", "-shortest", str(out_path)])
