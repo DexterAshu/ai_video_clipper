@@ -1,4 +1,4 @@
-# ClipForge configuration. Secrets never live here — .env only.
+# Frameza configuration. Secrets never live here — .env only.
 
 python:
   required: "3.11"          # MediaPipe wheel compatibility; enforced at startup

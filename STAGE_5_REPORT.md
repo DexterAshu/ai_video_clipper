@@ -1,6 +1,6 @@
 # STAGE 5 REPORT: FINAL POLISH, DOCUMENTATION, WINDOWS PACKAGING & GIT FINALIZATION
 
-**Project:** ClipForge (Local AI Video Clipper)  
+**Project:** Frameza (Local AI Video Clipper)  
 **Date:** November 14, 2026  
 **Status:** Complete, Documented, Packaged & Verified  
 **Target Hardware:** Lenovo LOQ 15IRX10 (Intel Core i7-13650HX, NVIDIA GeForce RTX 5050 8GB VRAM, 16GB DDR5, 1TB SSD, Windows 11 Home 64-bit)
@@ -9,7 +9,7 @@
 
 ## 1. Final Project Status
 
-ClipForge is now fully finalized and verified as a **100% free, completely local AI video clipping application for Windows**. 
+Frameza is now fully finalized and verified as a **100% free, completely local AI video clipping application for Windows**. 
 
 The entire end-to-end pipeline:
 1. Ingests local files or public YouTube video URLs.
@@ -62,7 +62,7 @@ We thoroughly evaluated **Option A (Portable Project Package)** vs. **Option B (
 | **Updates & Fixes** | **Instant.** Code updates require only editing or pulling Python scripts. | **Slow.** Requires full re-compilation for every minor bug fix. |
 | **Antivirus Compatibility** | **High.** Standard Python scripts and verified Gyan.dev FFmpeg binaries. | **Poor.** PyInstaller executables frequently trigger false-positive Trojan warnings. |
 
-**Decision:** **Option A (Portable Project Package)** is vastly superior in stability, reliability, and maintenance. ClipForge is distributed as a clean, reproducible portable package with `run.bat` and `check-environment.ps1`.
+**Decision:** **Option A (Portable Project Package)** is vastly superior in stability, reliability, and maintenance. Frameza is distributed as a clean, reproducible portable package with `run.bat` and `check-environment.ps1`.
 
 ---
 
@@ -70,7 +70,7 @@ We thoroughly evaluated **Option A (Portable Project Package)** vs. **Option B (
 
 - **Application Code:** MIT License, Copyright (c) 2026 DexterAshu.
 - **Fonts:** Montserrat family licensed under SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
-- **Music:** CC BY 4.0 background tracks by Kevin MacLeod (`assets/music/manifest.json`). ClipForge automatically generates attribution notices in exported video descriptions.
+- **Music:** CC BY 4.0 background tracks by Kevin MacLeod (`assets/music/manifest.json`). Frameza automatically generates attribution notices in exported video descriptions.
 - **FFmpeg Binaries:** GPLv3 / LGPLv2.1 Gyan.dev Windows builds with `libass` and `nvenc`.
 - **AI Models:** Faster-Whisper (MIT / Apache 2.0), Llama 3.2 (Meta Llama 3.2 Community License Agreement).
 - **Core Dependencies:** Validated against `requirements.txt`.
@@ -149,7 +149,7 @@ Result: **15 passed in 2.05s** (100% pass rate).
 When you choose to commit the changes, here is a suggested commit message:
 
 ```text
-chore: finalize ClipForge Windows release and documentation
+chore: finalize Frameza Windows release and documentation
 
 - Refine web dashboard UI with dynamic aspect ratio video players and 1-click social copy
 - Enhance run.bat launcher with Python 3.11 detection, port conflict warnings, and Ollama checks
@@ -161,9 +161,9 @@ chore: finalize ClipForge Windows release and documentation
 
 ---
 
-## 11. How to Launch ClipForge
+## 11. How to Launch Frameza
 
-To start ClipForge:
+To start Frameza:
 ```bat
 run.bat
 ```

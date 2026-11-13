@@ -1,6 +1,6 @@
 # STAGE 4 REPORT: END-TO-END TESTING, BUG FIXES, PERFORMANCE OPTIMIZATION & RELIABILITY
 
-**Project:** ClipForge (Local AI Video Clipper)  
+**Project:** Frameza (Local AI Video Clipper)  
 **Date:** November 14, 2026  
 **Status:** Complete & Verified  
 **Hardware Environment:**

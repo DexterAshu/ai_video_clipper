@@ -22,7 +22,7 @@ def _configure() -> None:
         return
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(_FORMAT, _DATEFMT))
-    root = logging.getLogger("clipforge")
+    root = logging.getLogger("frameza")
     root.setLevel(logging.INFO)
     root.addHandler(handler)
     root.propagate = False
@@ -31,7 +31,7 @@ def _configure() -> None:
 
 def get_logger(name: str) -> logging.Logger:
     _configure()
-    return logging.getLogger(f"clipforge.{name}")
+    return logging.getLogger(f"frameza.{name}")
 
 
 def add_file_handler(log_path: str | Path) -> logging.Handler:
@@ -40,12 +40,12 @@ def add_file_handler(log_path: str | Path) -> logging.Handler:
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(logging.Formatter(_FORMAT, "%Y-%m-%d %H:%M:%S"))
-    logging.getLogger("clipforge").addHandler(fh)
+    logging.getLogger("frameza").addHandler(fh)
     return fh
 
 
 def remove_file_handler(handler: logging.Handler) -> None:
-    logging.getLogger("clipforge").removeHandler(handler)
+    logging.getLogger("frameza").removeHandler(handler)
     handler.close()
 
 

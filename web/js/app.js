@@ -1,4 +1,4 @@
-/* ClipForge frontend — hash-routed views over the FastAPI backend.
+/* Frameza frontend — hash-routed views over the FastAPI backend.
  * Screens: home (submit), run (live progress), results, edit (per-clip),
  * queue (batch), youtube (upload center), settings, history.
  * All copy is plain language; server sentences are shown verbatim. */
@@ -471,8 +471,12 @@ function renderHome() {
   view.append(el("section", { class: "screen" },
     statsRow,
     el("div", { class: "hero" },
+      el("img", {
+        src: "logo.png",
+        alt: "Frameza — Turn every frame into a story",
+        style: "max-width:320px;width:100%;height:auto;margin:0 auto var(--sp-3);display:block;border-radius:var(--r-md);box-shadow:0 8px 30px rgba(0,0,0,0.6)"
+      }),
       sysPill,
-      el("div", { class: "t-label" }, "ClipForge AI"),
       el("h1", { class: "t-display" }, "Turn Long Videos into Viral Short Clips"),
       el("p", { class: "hero-sub" },
         "Free, local AI video clipper. Analyzes speech, detects viral moments, reframes faces to 9:16 vertical, and generates animated captions."),
@@ -1332,7 +1336,7 @@ async function renderYouTube() {
     left.append(
       el("h2", { class: "t-title", style: "margin:0" }, "One-time setup"),
       el("p", { class: "t-dim", style: "margin:0" },
-        "ClipForge needs a Google credentials file to talk to your channel. ",
+        "Frameza needs a Google credentials file to talk to your channel. ",
         "It stays on this computer."),
       el("pre", { class: "setup-pre t-mono" },
         (st.setup_instructions || "").replace(/[#*`]/g, "")));
@@ -1644,7 +1648,7 @@ async function renderAnalytics() {
           analyticsVideoHeadRow(),
           ...videos.map((v) => analyticsVideoRow(v)))
       : el("p", { class: "t-dim", style: "margin:0" },
-          "Nothing uploaded through ClipForge yet."));
+          "Nothing uploaded through Frameza yet."));
   body.append(tableCard);
 }
 
@@ -1666,7 +1670,7 @@ async function renderSettings() {
     el("div", { class: "results-head" },
       el("div", {},
         el("div", { class: "t-label" }, "Settings"),
-        el("h1", { class: "t-display" }, "How ClipForge works"))),
+        el("h1", { class: "t-display" }, "How Frameza works"))),
     wrap));
 
   let s, sys, upd, storage;
@@ -1742,7 +1746,7 @@ async function renderSettings() {
         installBtn.textContent = "Installing…";
         try {
           const r = await api.post("/api/update/apply");
-          toast(r.message || "Updated — restart ClipForge to finish.", "is-ok");
+          toast(r.message || "Updated — restart Frameza to finish.", "is-ok");
         } catch (e) { toast(e.message, "is-error"); }
         installBtn.disabled = false;
       });

@@ -1,6 +1,6 @@
-# ClipForge Installation Guide (Windows 11)
+# Frameza Installation Guide (Windows 11)
 
-This guide walks you through setting up ClipForge on a Windows 11 PC equipped with an NVIDIA GPU.
+This guide walks you through setting up Frameza on a Windows 11 PC equipped with an NVIDIA GPU.
 
 ---
 
@@ -22,7 +22,7 @@ This guide walks you through setting up ClipForge on a Windows 11 PC equipped wi
 
 ### Step 2.1: Install Python 3.11.9
 > [!IMPORTANT]
-> ClipForge requires **Python 3.11** specifically. MediaPipe and CTranslate2 bindings for Windows currently require Python 3.11 for prebuilt wheel compatibility. Do not use Python 3.12 or 3.13.
+> Frameza requires **Python 3.11** specifically. MediaPipe and CTranslate2 bindings for Windows currently require Python 3.11 for prebuilt wheel compatibility. Do not use Python 3.12 or 3.13.
 
 1. Download the Windows installer: [Python 3.11.9 (64-bit)](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe).
 2. During setup:
@@ -43,7 +43,7 @@ This guide walks you through setting up ClipForge on a Windows 11 PC equipped wi
    Once the prompt `>>>` appears, type `/bye` to exit. The model is now cached locally.
 
 ### Step 2.3: Set Up Portable FFmpeg with NVENC & libass
-ClipForge looks for local FFmpeg binaries in `tools/ffmpeg/bin/`.
+Frameza looks for local FFmpeg binaries in `tools/ffmpeg/bin/`.
 If you don't already have them, run the included deployment script:
 ```powershell
 .\.venv\Scripts\python.exe scripts/deploy_ffmpeg.py
@@ -60,7 +60,7 @@ tools\ffmpeg\bin\ffprobe.exe
 
 ## 3. Environment Verification
 
-ClipForge includes a PowerShell verification script that checks all hardware, Python, GPU, CUDA, and FFmpeg components:
+Frameza includes a PowerShell verification script that checks all hardware, Python, GPU, CUDA, and FFmpeg components:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\check-environment.ps1
@@ -69,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File .\check-environment.ps1
 You should see all or mostly green `[PASS]` statuses:
 ```text
 =======================================================
-         ClipForge Environment Health Check           
+          Frameza Environment Health Check            
 =======================================================
 [ 1] Python 3.11 Installation         : [PASS] Python 3.11.9
 [ 2] Virtual Environment (.venv)      : [PASS] Python 3.11.9 (.venv is healthy)
@@ -92,7 +92,7 @@ You should see all or mostly green `[PASS]` statuses:
 
 ## 4. Starting the Application
 
-To launch ClipForge:
+To launch Frameza:
 ```bat
 run.bat
 ```

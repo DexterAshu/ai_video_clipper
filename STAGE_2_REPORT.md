@@ -1,7 +1,7 @@
 # Stage 2 Execution Report: Windows Environment, Dependencies, FFmpeg, NVIDIA GPU & Ollama
 
 **Date:** November 14, 2026  
-**Project:** ClipForge (Local AI Video Clipper)  
+**Project:** Frameza (Local AI Video Clipper)  
 **Target Hardware:** Lenovo LOQ 15IRX10 | Intel Core i7-13650HX | NVIDIA GeForce RTX 5050 (8GB VRAM) | 16GB DDR5 RAM | Windows 11 Home 64-bit  
 **Status:** **STAGE 2 COMPLETE & VERIFIED**
 

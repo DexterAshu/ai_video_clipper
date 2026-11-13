@@ -1,6 +1,6 @@
 # Third-Party Licenses and Attributions
 
-ClipForge incorporates and interacts with various open-source libraries, media assets, tools, and AI models. This document summarizes their licensing terms and required attributions.
+Frameza incorporates and interacts with various open-source libraries, media assets, tools, and AI models. This document summarizes their licensing terms and required attributions.
 
 ---
 
@@ -26,7 +26,7 @@ Background music tracks in `assets/music/manifest.json` are licensed under Creat
   - *"Inspired"* by Kevin MacLeod (CC BY 4.0)
   - *"Local Forecast - Elevator"* by Kevin MacLeod (CC BY 4.0)
   - *"Cipher"* by Kevin MacLeod (CC BY 4.0)
-- **Attribution Policy:** When background music is muxed into a generated clip, ClipForge automatically appends the corresponding CC BY 4.0 attribution notice to the clip's exported description text.
+- **Attribution Policy:** When background music is muxed into a generated clip, Frameza automatically appends the corresponding CC BY 4.0 attribution notice to the clip's exported description text.
 
 ---
 

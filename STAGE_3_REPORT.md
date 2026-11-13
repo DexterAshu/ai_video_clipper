@@ -1,6 +1,6 @@
-# ClipForge — Stage 3 Completion Report
+# Frameza — Stage 3 Completion Report
 
-**Project:** ClipForge (Local AI Video Clipper)  
+**Project:** Frameza (Local AI Video Clipper)  
 **Hardware Platform:** Lenovo LOQ 15IRX10 · Intel Core i7-13650HX · NVIDIA GeForce RTX 5050 Laptop GPU (8GB VRAM, Blackwell) · 16GB DDR5 RAM · Windows 11 Home 64-bit  
 **Completed Date:** November 14, 2026  
 **Status:** **STAGE 3 COMPLETE — ALL VERIFICATIONS PASSED**
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Stage 3 transforms ClipForge from a backend pipeline into a **complete, free, responsive, locally running AI video clipping web application**. 
+Stage 3 transforms Frameza from a backend pipeline into a **complete, free, responsive, locally running AI video clipping web application**. 
 
 All 12 tasks outlined for Stage 3 have been designed, implemented, and verified:
 1. **Modern Web Dashboard**: Real-time project overview, metrics cards (Total videos processed, Total clips generated, Active jobs, Completed runs, Disk storage used), and live system hardware status.
@@ -80,7 +80,7 @@ $env:PYTHONPATH="."; .\.venv\Scripts\python.exe tests\test_stage3_api.py
    http://127.0.0.1:7860/
    ```
 3. **Clip a Video:**
-   - **From YouTube:** Paste any YouTube video link. ClipForge will inspect the video, preview its thumbnail, title, and duration.
+   - **From YouTube:** Paste any YouTube video link. Frameza will inspect the video, preview its thumbnail, title, and duration.
    - **From Local Disk:** Drag and drop any MP4, MKV, MOV, WebM, or AVI file.
    - **Choose Preferences:** Select your target format (9:16 Vertical, 1:1 Square, 16:9 Landscape), duration (e.g. 30–60s), number of clips, quality (1080p / 720p), and toggle face tracking or subtitle styles.
    - Click **"Make clips"**.

@@ -20,6 +20,16 @@
   letter-spacing: 0.02em;
   color: var(--ink);
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.topbar-logo {
+  height: 28px;
+  width: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
 }
 .topbar .spacer { flex: 1; }
 

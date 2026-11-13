@@ -1,10 +1,10 @@
-# ClipForge Environment Verification Script
+# Frameza Environment Verification Script
 # Checks all hardware, Python, FFmpeg, CUDA, Faster-Whisper, and Ollama components.
 
 $ErrorActionPreference = "Continue"
 
 Write-Host "`n=======================================================" -ForegroundColor Cyan
-Write-Host "         ClipForge Environment Health Check           " -ForegroundColor Cyan
+Write-Host "          Frameza Environment Health Check            " -ForegroundColor Cyan
 Write-Host "=======================================================`n" -ForegroundColor Cyan
 
 function Report-Item($num, $title, $status, $details) {

@@ -1,6 +1,6 @@
-# ClipForge Troubleshooting Guide
+# Frameza Troubleshooting Guide
 
-This guide addresses common questions, error messages, and solutions when running ClipForge on Windows.
+This guide addresses common questions, error messages, and solutions when running Frameza on Windows.
 
 ---
 
@@ -17,12 +17,12 @@ This guide addresses common questions, error messages, and solutions when runnin
   ```
 
 ### Issue: Port 7860 is already in use (`WinError 10048`)
-- **Cause:** A previously opened ClipForge terminal or process is still running and occupying port 7860.
+- **Cause:** A previously opened Frameza terminal or process is still running and occupying port 7860.
 - **Solution:**
   1. Simply navigate to [http://127.0.0.1:7860](http://127.0.0.1:7860) in your web browser.
   2. If the previous process crashed or hung, kill it via PowerShell:
      ```powershell
-     Get-Process python | Where-Object { $_.MainWindowTitle -match "ClipForge" } | Stop-Process -Force
+     Get-Process python | Where-Object { $_.MainWindowTitle -match "Frameza" } | Stop-Process -Force
      ```
   3. Or identify the PID using netstat:
      ```cmd
@@ -52,7 +52,7 @@ This guide addresses common questions, error messages, and solutions when runnin
 
 ### Issue: NVENC error `Minimum dimension requirement not met`
 - **Cause:** Modern NVIDIA NVENC architectures (including Blackwell RTX 50 series) require video frames to be at least $145 \times 145$ pixels.
-- **Solution:** Test videos and clips should always be at least $256 \times 256$ pixels. ClipForge's default outputs (1080p and 720p) exceed this minimum.
+- **Solution:** Test videos and clips should always be at least $256 \times 256$ pixels. Frameza's default outputs (1080p and 720p) exceed this minimum.
 
 ---
 
@@ -72,7 +72,7 @@ This guide addresses common questions, error messages, and solutions when runnin
 
 ### Issue: High RAM or VRAM usage during LLM generation
 - **Cause:** Running multiple heavy applications concurrently with an 8GB VRAM GPU.
-- **Solution:** `llama3.2:3b` requires only ~2.2 GB VRAM. Close other heavy GPU tasks (games, 3D rendering) while running ClipForge for optimal processing speed.
+- **Solution:** `llama3.2:3b` requires only ~2.2 GB VRAM. Close other heavy GPU tasks (games, 3D rendering) while running Frameza for optimal processing speed.
 
 ---
 
@@ -85,7 +85,7 @@ This guide addresses common questions, error messages, and solutions when runnin
      ```powershell
      .\.venv\Scripts\pip.exe install --upgrade yt-dlp
      ```
-  2. Alternatively, download the video manually and drag-and-drop the local MP4 file directly into the ClipForge UI.
+  2. Alternatively, download the video manually and drag-and-drop the local MP4 file directly into the Frameza UI.
 
 ### Issue: Local video upload rejected (`Unsupported format` or `422 Unprocessable`)
 - **Cause:** File is empty (0 bytes) or has an unsupported container format.

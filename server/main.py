@@ -24,7 +24,7 @@ def main() -> None:
     if host == "127.0.0.1":
         # opens once the server answers HTTP (launcher polls readiness)
         open_ui(f"http://127.0.0.1:{port}", cfg)
-    log.info("ClipForge UI on http://%s:%d", host, port)
+    log.info("Frameza UI on http://%s:%d", host, port)
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 
 

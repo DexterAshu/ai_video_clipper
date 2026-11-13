@@ -36,7 +36,7 @@ from logutil import get_logger
 log = get_logger("updater")
 
 ROOT = Path(__file__).resolve().parent
-REPO = "dexterAshu/clipforge"
+REPO = "dexterAshu/frameza"
 API = f"https://api.github.com/repos/{REPO}"
 UPDATES_DIR = ROOT / "cache" / "updates"
 
@@ -74,7 +74,7 @@ def _get_json(url: str, timeout: int = 8):
     import urllib.request
 
     headers = {
-        "User-Agent": "ClipForge-updater",
+        "User-Agent": "Frameza-updater",
         "Accept": "application/vnd.github+json",
     }
     token = os.environ.get("GITHUB_TOKEN")
@@ -202,7 +202,7 @@ def _stage_delta(files: list[dict], latest: str, staging: Path) -> list[dict]:
             continue
         url = (f"https://raw.githubusercontent.com/{REPO}/{latest}/"
                f"{f['path']}")
-        req = urllib.request.Request(url, headers={"User-Agent": "ClipForge"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Frameza"})
         with urllib.request.urlopen(req, timeout=60) as r:
             data = r.read()
         if f["sha"] and _blob_sha(data) != f["sha"]:

@@ -1,4 +1,4 @@
-"""Auto-open the ClipForge UI when the server starts.
+"""Auto-open the Frameza UI when the server starts.
 
 ``window_mode: app`` launches a Chromium browser (Edge/Chrome) with ``--app=URL``
 so the UI gets its own chromeless window; ``tab`` (or no Chromium found) falls

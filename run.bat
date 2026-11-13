@@ -2,12 +2,12 @@
 setlocal enabledelayedexpansion
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-title ClipForge Local AI Studio
+title Frameza Local AI Studio
 
 cd /d "%~dp0"
 
 echo ===================================================
-echo               ClipForge Launcher
+echo                Frameza Launcher
 echo ===================================================
 
 rem 1. Check local FFmpeg or PATH
@@ -84,7 +84,7 @@ if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" (
 )
 
 rem 6. Launch application entry point
-echo [*] Starting ClipForge server on http://127.0.0.1:7860...
+echo [*] Starting Frameza server on http://127.0.0.1:7860...
 echo [*] Logs will stream below. Close this window to stop the server.
 echo.
 .venv\Scripts\python.exe -m server.main
@@ -95,7 +95,7 @@ exit /b 0
 :fail
 echo.
 echo ===================================================
-echo [ERROR] ClipForge failed to start or exited with an error.
+echo [ERROR] Frameza failed to start or exited with an error.
 echo ===================================================
 echo Common solutions:
 echo  1. Run PowerShell: .\check-environment.ps1 to diagnose missing components.

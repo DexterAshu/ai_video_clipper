@@ -1,8 +1,12 @@
-# ClipForge 🎬⚡
+# Frameza 🎬⚡
+
+<p align="center">
+  <img src="web/logo.png" alt="Frameza — Turn every frame into a story" width="520">
+</p>
 
 **100% Free, Fully Local AI Video Clipping Application for Windows**
 
-ClipForge transforms long-form videos (YouTube URLs or local files) into viral, short-form vertical videos (9:16, 1:1, or 16:9) formatted for YouTube Shorts, Instagram Reels, and TikTok. 
+Frameza transforms long-form videos (YouTube URLs or local files) into viral, short-form vertical videos (9:16, 1:1, or 16:9) formatted for YouTube Shorts, Instagram Reels, and TikTok. 
 
 Powered entirely by **local AI models and GPU acceleration**—with **zero mandatory cloud API keys, zero subscription fees, and 100% local data privacy**.
 
@@ -32,7 +36,7 @@ Powered entirely by **local AI models and GPU acceleration**—with **zero manda
 | :---: | :---: |
 | ![Results](design/screenshots/p3_04_results_1280.png) | ![Caption Styles](design/screenshots/p4_02_picker_caption_1280.png) |
 
-> **Note on Screenshots:** Screenshots shown above are sourced from the `design/screenshots/` design reference folder. To capture and update real screenshots from your own live runs, launch ClipForge via `run.bat`, generate a sample batch, and save screenshots directly into `design/screenshots/`.
+> **Note on Screenshots:** Screenshots shown above are sourced from the `design/screenshots/` design reference folder. To capture and update real screenshots from your own live runs, launch Frameza via `run.bat`, generate a sample batch, and save screenshots directly into `design/screenshots/`.
 
 ---
 
@@ -94,7 +98,7 @@ run.bat
 For a deep-dive step-by-step setup guide, see [INSTALLATION.md](file:///d:/Project%20Development/Python/AI-Video-Clipper/INSTALLATION.md).
 
 ### FFmpeg Configuration
-ClipForge requires FFmpeg compiled with `--enable-libass` and `--enable-nvenc`. A self-contained portable distribution is placed in:
+Frameza requires FFmpeg compiled with `--enable-libass` and `--enable-nvenc`. A self-contained portable distribution is placed in:
 ```
 tools/ffmpeg/bin/ffmpeg.exe
 tools/ffmpeg/bin/ffprobe.exe
@@ -115,7 +119,7 @@ To enable local AI moment ranking and metadata generation:
 
 ---
 
-## 7. How to Use ClipForge
+## 7. How to Use Frameza
 
 ### A. Processing a YouTube Video
 1. Open the web UI at `http://127.0.0.1:7860`.
@@ -153,7 +157,7 @@ To enable local AI moment ranking and metadata generation:
 
 ## 8. Configuration (`config.yaml` and `config.local.yaml`)
 
-ClipForge loads `config.yaml` for base application defaults and automatically merges any overrides present in `config.local.yaml`.
+Frameza loads `config.yaml` for base application defaults and automatically merges any overrides present in `config.local.yaml`.
 
 Example `config.local.yaml` (see `config.local.example.yaml`):
 ```yaml
@@ -179,7 +183,7 @@ render:
 ## 9. Project Folder Structure
 
 ```text
-ClipForge/
+Frameza/
 ├── .venv/                      # Project Python 3.11 virtual environment (gitignored)
 ├── assets/                     # Bundled fonts, avatar drivers, and music manifests
 │   ├── fonts/                  # Montserrat OFL typography
@@ -213,7 +217,7 @@ ClipForge/
 
 ## 10. Privacy and Local Processing Guarantee
 
-ClipForge is architected strictly around **local privacy**:
+Frameza is architected strictly around **local privacy**:
 1. **Zero Cloud Uploads:** Your local video files, audio tracks, and transcripts are never uploaded to any third-party cloud service.
 2. **Local AI Inference:** Highlight selection, transcription, face tracking, and metadata generation run on your own CPU and NVIDIA GPU.
 3. **Local Network Binding:** The web dashboard binds strictly to `127.0.0.1` (localhost), ensuring your interface is never exposed to external local network machines without explicit configuration.
@@ -228,7 +232,7 @@ For solutions to common errors (such as port conflicts, CUDA DLL loading, or mod
 
 ## 12. Licensing & Acknowledgements
 
-- **ClipForge Code:** Licensed under the MIT License. Copyright (c) 2026 DexterAshu.
+- **Frameza Code:** Licensed under the MIT License. Copyright (c) 2026 DexterAshu.
 - **Fonts:** Montserrat is licensed under the SIL Open Font License 1.1.
 - **Music:** Tracks by Kevin MacLeod are licensed under Creative Commons Attribution 4.0 (CC BY 4.0).
 - **FFmpeg:** Licensed under GNU General Public License v3.0 / LGPL v2.1.
