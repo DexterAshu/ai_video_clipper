@@ -311,6 +311,14 @@ def query_ollama(
             else:
                 log.warning("unsupported media item for Ollama: %s", m.get("kind"))
 
+    # Vision capability gate: text-only models fail gracefully by dropping images
+    if images_b64:
+        meta = MODEL_CATALOG.get(chosen_model, {})
+        has_vision = bool(meta.get("vision") or "vision" in chosen_model.lower() or "llava" in chosen_model.lower() or "qwen3.5" in chosen_model.lower())
+        if not has_vision:
+            log.warning("model '%s' does not support vision/multimodal input; processing as text-only prompt", chosen_model)
+            images_b64 = []
+
     payload: dict[str, Any] = {
         "model": chosen_model,
         "prompt": prompt,

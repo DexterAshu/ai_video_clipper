@@ -131,12 +131,15 @@ class SubjectTracker:
     """Persistent subject tracker across frames: tracks multiple faces,
     maintains spatial track identity, scores active speakers, applies
     hysteresis to prevent erratic switching, provides deadband anti-jitter,
-    temporary face disappearance recovery, and multi-person 2-shot framing."""
+    sampling-aware face disappearance recovery, and multi-person 2-shot framing."""
 
-    def __init__(self, w: int, h: int, deadband_px: float = 4.0):
+    def __init__(self, w: int, h: int, deadband_px: float = 4.0, fps: float = 12.0):
         self.w = w
         self.h = h
         self.deadband_px = deadband_px
+        self.fps = max(1.0, float(fps))
+        self.grace_frames = max(3, int(round(1.6 * self.fps)))
+        self.stale_frames = max(5, int(round(2.0 * self.fps)))
         self.tracks: dict[int, dict] = {}
         self.next_id = 0
         self.active_id: int | None = None
@@ -149,8 +152,8 @@ class SubjectTracker:
         """faces_data: list of (cx, cy, fw, fh, conf, mouth_open)."""
         if not faces_data:
             self.frames_since_face += 1
-            # Temporary face disappearance recovery: hold track position up to 20 frames (~1.6s at 12fps)
-            if self.frames_since_face <= 20 and self.active_id in self.tracks:
+            # Dynamic sampling-aware face disappearance recovery: hold track up to 1.6s
+            if self.frames_since_face <= self.grace_frames and self.active_id in self.tracks:
                 rec = dict(self.tracks[self.active_id])
                 rec["recovered"] = True
                 return rec
@@ -190,8 +193,8 @@ class SubjectTracker:
             t["last_frame"] = frame_idx
             self.mouth_hist[best_id].append(m_open)
 
-        # prune stale tracks not seen for > 24 frames (~2.0s at 12fps)
-        stale = [tid for tid, t in self.tracks.items() if frame_idx - t["last_frame"] > 24]
+        # prune stale tracks based on actual sampling rate (default ~2.0s)
+        stale = [tid for tid, t in self.tracks.items() if frame_idx - t["last_frame"] > self.stale_frames]
         for tid in stale:
             del self.tracks[tid]
             if tid in self.mouth_hist:
@@ -210,11 +213,16 @@ class SubjectTracker:
             max_x = max(f1[0] + f1[2] / 2.0, f2[0] + f2[2] / 2.0)
             span_x = max_x - min_x
             if span_x <= 0.75 * crop_w_est:
-                multi_cx = (min_x + max_x) / 2.0
-                multi_cy = min(f1[1], f2[1])
+                raw_cx = (min_x + max_x) / 2.0
+                raw_cy = min(f1[1], f2[1])
+                if hasattr(self, "_last_multi_cx") and abs(raw_cx - self._last_multi_cx) < self.deadband_px:
+                    multi_cx = self._last_multi_cx
+                else:
+                    multi_cx = raw_cx
+                    self._last_multi_cx = raw_cx
                 return {
                     "cx": multi_cx,
-                    "cy": multi_cy,
+                    "cy": raw_cy,
                     "w": span_x,
                     "h": max(f1[3], f2[3]),
                     "multi_person": True,
@@ -264,7 +272,8 @@ def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
     every = max(1, int(every if every is not None
                        else rcfg.get("face_detect_every_n_frames", 1)))
     cap = cv2.VideoCapture(str(clip_path))
-    tracker = SubjectTracker(w, h)
+    sample_fps = float(rcfg.get("proxy_fps", 12)) / every
+    tracker = SubjectTracker(w, h, fps=sample_fps)
     targets: list[dict | None] = []
     kinds: list[str] = []
     stats: dict = {"face": 0, "motion": 0, "center": 0}
@@ -376,7 +385,10 @@ def reframe_clip(source: str | Path, start: float, end: float,
                  info: dict | None = None,
                  bottom_exclusion_ratio: float = 0.0,
                  h_bias_center: float = -1.0,
-                 event_cuts_rel: list[dict] | None = None) -> dict:
+                 event_cuts_rel: list[dict] | None = None,
+                 crop_x_offset: float = 0.0,
+                 crop_y_offset: float = 0.0,
+                 manual_zoom: float = 1.0) -> dict:
     """Intelligently reframe the [start, end] window of `source` to the target aspect
     with subject-aware 2D tracking and adaptive headroom. Single re-encode."""
     cfg = cfg or load_config()
@@ -510,6 +522,12 @@ def reframe_clip(source: str | Path, start: float, end: float,
     full_x = np.interp(frame_times, sample_times, target_xs).tolist()
     full_y = np.interp(frame_times, sample_times, target_ys).tolist()
 
+    # Apply manual framing offsets from Studio if specified
+    if crop_x_offset:
+        full_x = [float(np.clip(px + crop_x_offset, half_w, w - half_w)) for px in full_x]
+    if crop_y_offset:
+        full_y = [float(np.clip(py + crop_y_offset, 0.0, h - ch)) for py in full_y]
+
     # KEEP mode: bias horizontal crop toward center subtitle if requested
     if 0.0 <= h_bias_center <= 1.0:
         bias_x = float(np.clip(h_bias_center * w, half_w, w - half_w))
@@ -583,6 +601,10 @@ def reframe_clip(source: str | Path, start: float, end: float,
             s_idx = min(int(round((i / fps) * proxy_fps)), len(raw_targets) - 1)
             if s_idx >= 0 and raw_targets[s_idx] and raw_targets[s_idx].get("multi_person"):
                 zooms[i] = 1.0
+
+    # Apply manual zoom from Studio if specified
+    if manual_zoom and manual_zoom != 1.0:
+        zooms = zooms * max(1.0, float(manual_zoom))
 
     # ffmpeg sendcmd file: crop x, y, w, h command per frame
     cmd_file = out_path.with_suffix(".cmds.txt")

@@ -125,6 +125,24 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
         speed_ramps = None
 
     _prog(0.3, "cutting / reframing")
+    # Check if custom Studio edits exist for this clip
+    plan_path = clip_dir / "edit_plan.json"
+    studio_plan = {}
+    if plan_path.exists():
+        try:
+            studio_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            log.warning("could not read studio edit_plan.json: %s", e)
+
+    crop_x_off = float(studio_plan.get("crop_x_offset", 0.0))
+    crop_y_off = float(studio_plan.get("crop_y_offset", 0.0))
+    man_zoom = float(studio_plan.get("zoom", 1.0))
+    cap_text = studio_plan.get("caption_text")
+    cap_anchor = studio_plan.get("caption_anchor")
+    mus_enabled = bool(studio_plan.get("music_enabled", False))
+    mus_track = studio_plan.get("music_track")
+    mus_vol = float(studio_plan.get("music_volume_db", -18.0))
+    sp_enhance = bool(studio_plan.get("speech_enhance", True))
     if aspect == "16:9":
         cut_path = (cut_mod.cut_segments(info["video_path"], segments, clip_dir / "cut.mp4",
                                          cfg, speed_ramps=speed_ramps)
@@ -137,7 +155,8 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
         cut_dur = reframe_mod.probe(cut_path)["duration"]
         metrics = reframe_mod.reframe_clip(
             cut_path, 0.0, cut_dur, clip_dir / "reframed.mp4", [], cfg,
-            aspect=aspect, info=None, bottom_exclusion_ratio=excl, h_bias_center=hbias)
+            aspect=aspect, info=None, bottom_exclusion_ratio=excl, h_bias_center=hbias,
+            crop_x_offset=crop_x_off, crop_y_offset=crop_y_off, manual_zoom=man_zoom)
         src = clip_dir / "reframed.mp4"
     else:
         cuts_rel = [t - out_start for t in
@@ -146,13 +165,15 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
             info["video_path"], out_start, out_end, clip_dir / "reframed.mp4",
             cuts_rel, cfg, aspect=aspect,
             info=(info if out_start == start and out_end == end else None),
-            bottom_exclusion_ratio=excl, h_bias_center=hbias)
+            bottom_exclusion_ratio=excl, h_bias_center=hbias,
+            crop_x_offset=crop_x_off, crop_y_offset=crop_y_off, manual_zoom=man_zoom)
         src = clip_dir / "reframed.mp4"
 
     if edit_plan:
         words = edit_plan["words"]
         trans = edit_plan.get("transitions") or {}
-        cap_kwargs = dict(anchor=edit_plan["caption_anchor"], cta=edit_plan["cta"],
+        cap_kwargs = dict(anchor=cap_anchor if cap_anchor is not None else edit_plan["caption_anchor"],
+                          cta=edit_plan["cta"],
                           captions_enabled=edit_plan["captions_enabled"],
                           fades=edit_plan["fades"], zoom_punch=edit_plan["zoom_punch"],
                           zoom_events=edit_plan.get("zoom_events") or None,
@@ -160,15 +181,45 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
                           whip_times=(trans.get("times") or None
                                       if trans.get("kind") == "whip" else None))
     else:
-        words = [{"word": w["word"],
-                  "start": round(max(0.0, w["start"] - out_start), 3),
-                  "end": round(max(0.0, w["end"] - out_start), 3)}
-                 for w in transcript["words"]
-                 if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
+        if cap_text and cap_text.strip():
+            raw_words = cap_text.strip().split()
+            dur_clip = max(0.1, out_end - out_start)
+            step = dur_clip / max(1, len(raw_words))
+            words = [{"word": w, "start": round(i * step, 3), "end": round((i + 1) * step, 3)}
+                     for i, w in enumerate(raw_words)]
+        else:
+            words = [{"word": w["word"],
+                      "start": round(max(0.0, w["start"] - out_start), 3),
+                      "end": round(max(0.0, w["end"] - out_start), 3)}
+                     for w in transcript["words"]
+                     if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
         cap_kwargs = captions_mod.cta_from_cfg(cfg)
+        if cap_anchor is not None:
+            cap_kwargs["anchor"] = float(cap_anchor)
+
     _prog(0.7, "burning captions")
     final = captions_mod.caption_clip(src, words, clip_dir / "final.mp4", cfg,
                                       preset_name=preset, **cap_kwargs)
+
+    # Audio mixdown: speech enhancement, ducked music, -14 LUFS loudnorm
+    import music as music_mod
+    music_path = None
+    if mus_enabled:
+        resolved_choice = mus_track or cfg.get("music", {}).get("default_track") or "auto"
+        try:
+            t_info = music_mod.resolve(resolved_choice, cap_text or "")
+            if t_info:
+                music_path = str(music_mod.ensure_track(t_info))
+        except Exception as e:
+            log.warning("music resolution failed in rerender: %s", e)
+
+    tmp_mixed = clip_dir / "final_mixed.mp4"
+    cfg_audio = dict(cfg)
+    cfg_audio.setdefault("audio", {})["speech_enhance"] = sp_enhance
+    mixed = music_mod.mix_audio(final, tmp_mixed, cfg_audio, music_path=music_path,
+                                volume_db=mus_vol)
+    if mixed is not None:
+        tmp_mixed.replace(final)
 
     duration = edit_plan["output_duration"] if edit_plan else round(out_end - out_start, 3)
     render_s = round(time.perf_counter() - _t0, 2)
@@ -177,6 +228,15 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
                  "reframe": metrics, "path": str(final),
                  "srt": str(final.with_suffix(".srt")),
                  "style": style_mod.summarize(edit_plan) if edit_plan else None})
+    if studio_plan:
+        clip["studio_edits"] = studio_plan
+        meta_p = clip_dir / "metadata.json"
+        if meta_p.exists():
+            try:
+                m_curr = json.loads(meta_p.read_text(encoding="utf-8"))
+                clip["metadata"] = m_curr
+            except Exception:
+                pass
     job.setdefault("notes", []).append(
         f"clip {clip_index:02d} re-rendered to {out_start:.2f}-{out_end:.2f}"
         + (" (refined)" if edit_plan else ""))

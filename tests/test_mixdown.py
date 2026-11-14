@@ -32,7 +32,7 @@ def test_graph_order_voice_sfx_music_loudnorm():
     i_duck = graph.index("sidechaincompress")
     i_norm = graph.index("loudnorm")
     assert i_sfx < i_duck < i_norm
-    assert "loudnorm=I=-14:TP=-1:LRA=11" in graph
+    assert f"loudnorm=I=-14:TP={music.DEFAULT_LOUDNORM['tp']}:LRA=11" in graph
     assert "adelay=3500:all=1" in graph
     # music is the LAST input, after the sfx files
     assert "[3:a]atrim" in graph
@@ -53,7 +53,9 @@ def test_graph_music_only_matches_duck_config():
 
 
 def test_graph_loudnorm_only():
-    graph, n = music._mix_graph(10.0, load_config(), sfx=[], has_music=False,
+    cfg = load_config()
+    cfg.setdefault("audio", {})["speech_enhance"] = False
+    graph, n = music._mix_graph(10.0, cfg, sfx=[], has_music=False,
                                 volume_db=-18.0,
                                 loudnorm=music.DEFAULT_LOUDNORM)
     assert n == 0

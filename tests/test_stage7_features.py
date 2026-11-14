@@ -350,3 +350,49 @@ def test_editor_save_and_reset_workflow(tmp_path):
         assert reset_res["ok"] is True
         assert not (clip_dir / "edit_plan.json").exists()
 
+
+def test_sampling_rate_adaptive_grace_period():
+    """Verify SubjectTracker face disappearance grace frames dynamically scale with sampling FPS."""
+    t12 = reframe.SubjectTracker(1920, 1080, fps=12.0)
+    assert t12.grace_frames == 19
+    assert t12.stale_frames == 24
+
+    t24 = reframe.SubjectTracker(1920, 1080, fps=24.0)
+    assert t24.grace_frames == 38
+    assert t24.stale_frames == 48
+
+    t6 = reframe.SubjectTracker(1920, 1080, fps=6.0)
+    assert t6.grace_frames == 10
+    assert t6.stale_frames == 12
+
+
+def test_caption_cyan_highlight_bgr_encoding():
+    """Verify karaoke-highlight uses genuine Cyan in ASS BGR (&H00FFD700)."""
+    cfg = config.load_config()
+    preset = cfg["captions"]["presets"]["karaoke-highlight"]
+    # In ASS &H00BBGGRR: Cyan is Blue=FF, Green=D7, Red=00 -> &H00FFD700
+    assert preset["highlight_color"] == "&H00FFD700"
+
+
+def test_text_only_model_drops_vision_gracefully():
+    """Verify query_ollama handles vision media on text-only models by processing text gracefully."""
+    with patch("requests.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"response": "Processed text without crash", "eval_count": 10}
+        mock_post.return_value = mock_resp
+
+        # Pass image media to a text-only model
+        fake_media = [{"kind": "image", "data": b"fake_png_bytes"}]
+        res = llm_manager.query_ollama(
+            prompt="Analyze this frame",
+            model="llama3.2:3b",
+            media=fake_media,
+            enable_fallback=False
+        )
+        assert res == "Processed text without crash"
+        # Verify sent payload did NOT include images
+        sent_payload = mock_post.call_args[1]["json"]
+        assert "images" not in sent_payload
+
+
