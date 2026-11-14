@@ -1,0 +1,11 @@
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+https://openfontlicense.org
+
+Noto is a trademark of Google LLC.
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/devanagari)
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font Software.
+

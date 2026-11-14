@@ -1,0 +1,34 @@
+{
+  "llama3.2:3b": {
+    "elapsed_s": 2.64,
+    "eval_count": 125,
+    "tok_per_sec": 114.9,
+    "vram_gb": 2.83,
+    "processor": "Unknown",
+    "parsed": {
+      "viral_hook": "Nawazuddin: 'No script? No problem!'",
+      "viral_title": "Nawazuddin: 'No Script? No Problem!'",
+      "topic": "The power of improvisation in comedy",
+      "engagement_score": 85,
+      "hinglish_meaning": "The conversation highlights how Nawazuddin's talent and the audience's preference for raw, real moments make a script unnecessary.",
+      "key_quote": "Arey bhai, yahan script hoti toh hum aate hi nahi!"
+    },
+    "json_valid": true
+  },
+  "qwen3.5:4b": {
+    "elapsed_s": 40.74,
+    "eval_count": 2943,
+    "tok_per_sec": 73.8,
+    "vram_gb": 0.0,
+    "processor": "Unknown",
+    "parsed": {
+      "viral_hook": "Why This Show Has NO Script!",
+      "viral_title": "Nawazuddin Reveals: Why We Don't Use Scripts!",
+      "topic": "The value of unscripted authenticity in viral content",
+      "engagement_score": 85,
+      "hinglish_meaning": "The cast jokes that their show succeeded because audiences prefer raw, authentic moments over rigid planning.",
+      "key_quote": "Script ki zaroorat unko hoti hai jinke paas talent nahi hota"
+    },
+    "json_valid": true
+  }
+}

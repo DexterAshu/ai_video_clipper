@@ -112,6 +112,11 @@ def get(run_id: str) -> RunHandle | None:
     return REGISTRY.get(run_id)
 
 
+def has_active_runs() -> bool:
+    """Return True if any processing job or re-render is actively running."""
+    return any(h.state == "running" for h in REGISTRY.values())
+
+
 def launch(handle: RunHandle, work) -> None:
     """Run `work(handle)` on a daemon thread; `work` must set the terminal
     state via handle.finish(...) itself (it knows done vs cancelled vs error)."""

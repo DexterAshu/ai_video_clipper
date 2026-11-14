@@ -113,9 +113,7 @@ def _dispatch(name, task, schema, prompt, context, cfg, media=None):
             raise LLMError("groq does not support media input")
         return _groq_complete(schema, prompt, cfg)
     if name == "ollama":
-        if media:
-            raise LLMError("ollama does not support media input")
-        return _ollama_complete(schema, prompt, cfg)
+        return _ollama_complete(schema, prompt, cfg, media=media)
     if name == "openrouter":
         return _openrouter_complete(schema, prompt, cfg, media)
     raise LLMError(f"unknown provider {name}")
@@ -285,19 +283,14 @@ def _openrouter_complete(schema, prompt, cfg, media=None):
     return body["choices"][0]["message"]["content"]
 
 
-def _ollama_complete(schema, prompt, cfg):
-    import requests
-    base = os.environ.get("OLLAMA_BASE_URL", cfg["llm"].get(
-        "ollama_base_url", "http://localhost:11434"))
-    r = requests.post(
-        f"{base}/api/generate",
-        json={"model": cfg["llm"]["ollama_model"], "prompt": prompt,
-              "format": _strip_unsupported(schema), "stream": False},
-        timeout=300,
+def _ollama_complete(schema, prompt, cfg, media=None):
+    import llm_manager
+    return llm_manager.query_ollama(
+        prompt=prompt,
+        schema=_strip_unsupported(schema),
+        media=media,
+        cfg=cfg
     )
-    if r.status_code != 200:
-        raise LLMError(f"ollama HTTP {r.status_code}", detail=r.text[:500])
-    return r.json()["response"]
 
 
 def _strip_unsupported(schema):

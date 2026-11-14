@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 
 from config import ROOT, load_config
-from errors import ClipForgeError
+from errors import FramezaError
 from ffutil import probe, run_ffmpeg
 from logutil import get_logger
 
@@ -36,14 +36,14 @@ DEFAULT_VOLUME_DB = -18.0
 # Duck defaults — tuned values documented in build_mix_graph; overridable via
 # config music.duck.*.
 DEFAULT_DUCK = {"threshold": 0.05, "ratio": 3, "attack": 15, "release": 200}
-DEFAULT_LOUDNORM = {"enabled": True, "i": -14, "tp": -1, "lra": 11}
+DEFAULT_LOUDNORM = {"enabled": True, "i": -14, "tp": -1.5, "lra": 11}
 SFX_KINDS = ("whoosh", "pop", "ding", "riser")
-_USER_AGENT = "ClipForge/2.0 (+https://github.com/; background-music fetch)"
+_USER_AGENT = "Frameza/2.0 (+https://github.com/; background-music fetch)"
 _download_lock = threading.Lock()
 _sfx_lock = threading.Lock()
 
 
-class MusicError(ClipForgeError):
+class MusicError(FramezaError):
     stage = "music"
 
 
@@ -272,6 +272,15 @@ def _mix_graph(dur: float, cfg: dict, *, sfx: list[dict], has_music: bool,
     side-chain-ducked music → loudnorm to platform loudness."""
     parts: list[str] = []
     voice = "[0:a]"
+
+    # Professional Voice Enhancement (Stage 7):
+    # 1. highpass at 80Hz: cuts low-frequency room rumble, HVAC thumps, mic popping
+    # 2. afftdn (adaptive FFT noise suppression): drops background noise floor by ~25dB
+    # 3. acompressor: tightens dialogue dynamic range (threshold -20dB, ratio 3:1)
+    audio_cfg = cfg.get("audio", {})
+    if audio_cfg.get("speech_enhance", True):
+        parts.append(f"{voice}highpass=f=80,afftdn=nf=-25,acompressor=threshold=-20dB:ratio=3:attack=10:release=100[v_clean]")
+        voice = "[v_clean]"
 
     if sfx:
         sfx_cfg = cfg.get("sfx", {})

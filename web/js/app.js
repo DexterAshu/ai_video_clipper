@@ -175,6 +175,7 @@ function renderHome() {
   const o = {
     count: 0, aspect: "9:16", quality: "1080p", faceTracking: true,
     captions: true, metadata: true, preset: "", font: "", music: "",
+    captionLanguage: "hinglish",
     musicVol: -18, cta: "", highlight: "", pacing: "", clipMin: "30",
     clipMax: "60", subsMode: "", profile: "", wmMode: "text", wmText: "",
     wmImage: "", wmImageName: "", wmPos: "bottom-right",
@@ -400,6 +401,12 @@ function renderHome() {
     }
   });
 
+  const langSeg = segmented([
+    ["hinglish", "Hinglish"],
+    ["hindi", "Hindi (देवनागरी)"],
+    ["english", "English"]
+  ], "hinglish", (v) => { o.captionLanguage = v; });
+
   // ---- background music ----
   const musicToggle = toggle(false, "Add Background Music");
   const musicArea = el("div", { style: "display:none;margin-top:8px" });
@@ -517,6 +524,7 @@ function renderHome() {
 
   const stylingCard = el("div", { class: "studio-card card" },
     el("div", { class: "studio-section-title" }, "4. Captions & Call To Action"),
+    field("Caption Language", langSeg),
     presetRow.node,
     fontRow.node,
     field("Call to Action (Ending Message)", ctaInput));
@@ -605,6 +613,7 @@ function renderHome() {
         face_tracking: o.faceTracking,
         generate_captions: o.captions,
         generate_metadata: o.metadata,
+        caption_language: o.captionLanguage || "hinglish",
         preset: o.captions ? (o.preset || null) : "none",
         music: o.music,
         music_volume_db: o.musicVol,
@@ -1058,9 +1067,12 @@ function clipCard(jobName, clip, dots) {
 
 async function renderEditor(jobName, indexStr) {
   const index = Number(indexStr);
-  let job;
+  let job, edData;
   try {
-    job = await api.get(`/api/jobs/${encodeURIComponent(jobName)}`);
+    [job, edData] = await Promise.all([
+      api.get(`/api/jobs/${encodeURIComponent(jobName)}`),
+      api.get(`/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/editor`).catch(() => null)
+    ]);
   } catch (e) {
     toast(e.message, "is-error");
     location.hash = "#/history";
@@ -1078,156 +1090,315 @@ async function renderEditor(jobName, indexStr) {
     `/api/files/${encodeURIComponent(jobName)}/clip_${nn}/final.mp4?t=${Date.now()}`;
   const video = clipVideo(videoUrl());
 
-  const state = { preset: "", styleRefine: true, subsMode: "" };
+  const state = {
+    preset: edData?.caption_preset || clip.preset || "modern-bold",
+    styleRefine: true,
+    subsMode: ""
+  };
 
+  // 1. Timeline Controls
   const startIn = el("input", { class: "input t-mono", type: "number",
-                                step: "0.1", value: clip.start.toFixed(1) });
+                                step: "0.1", value: (edData?.start ?? clip.start).toFixed(1) });
   const endIn = el("input", { class: "input t-mono", type: "number",
-                              step: "0.1", value: clip.end.toFixed(1) });
-  const snapBtn = el("button", { class: "btn btn-sm", type: "button" },
-    "Snap to sentences");
+                              step: "0.1", value: (edData?.end ?? clip.end).toFixed(1) });
+  const durLabel = el("span", { class: "badge t-mono", style: "align-self:center;" },
+    `${((edData?.end ?? clip.end) - (edData?.start ?? clip.start)).toFixed(1)}s`);
+
+  const updateDur = () => {
+    const s = Number(startIn.value);
+    const e = Number(endIn.value);
+    durLabel.textContent = `${Math.max(0, e - s).toFixed(1)}s`;
+  };
+  startIn.addEventListener("input", updateDur);
+  endIn.addEventListener("input", updateDur);
+
+  const trimStartMinus = el("button", { class: "btn btn-sm", type: "button", title: "Trim start -1s" }, "-1s");
+  trimStartMinus.onclick = () => { startIn.value = Math.max(0, Number(startIn.value) - 1.0).toFixed(1); updateDur(); };
+  const trimStartPlus = el("button", { class: "btn btn-sm", type: "button", title: "Trim start +1s" }, "+1s");
+  trimStartPlus.onclick = () => { startIn.value = (Number(startIn.value) + 1.0).toFixed(1); updateDur(); };
+
+  const trimEndMinus = el("button", { class: "btn btn-sm", type: "button", title: "Trim end -1s" }, "-1s");
+  trimEndMinus.onclick = () => { endIn.value = Math.max(0, Number(endIn.value) - 1.0).toFixed(1); updateDur(); };
+  const trimEndPlus = el("button", { class: "btn btn-sm", type: "button", title: "Trim end +1s" }, "+1s");
+  trimEndPlus.onclick = () => { endIn.value = (Number(endIn.value) + 1.0).toFixed(1); updateDur(); };
+
+  const snapBtn = el("button", { class: "btn btn-sm", type: "button" }, "Snap to sentences");
   snapBtn.addEventListener("click", async () => {
     try {
       const r = await api.get(`/api/jobs/${encodeURIComponent(jobName)}`
         + `/clips/snap?start=${startIn.value}&end=${endIn.value}`);
       startIn.value = r.start.toFixed(1);
       endIn.value = r.end.toFixed(1);
+      updateDur();
     } catch (e) { toast(e.message, "is-error"); }
   });
 
-  const stylePreview = el("img", { class: "style-preview", alt: "",
-                                   src: "/api/preview?preset="
-                                     + encodeURIComponent(clip.preset || "") });
-  const presetRow = pickerRow("Caption style",
-    (clip.preset || "Style's default").replace(/-/g, " "), async () => {
-      const v = await pickPreset(state.preset || clip.preset, "");
-      if (v !== null) {
-        state.preset = v;
-        presetRow.btn.textContent = v.replace(/-/g, " ");
-        stylePreview.src = `/api/preview?preset=${encodeURIComponent(v)}`;
-      }
-    });
-  const styleToggle = toggle(true, "Polish clip timing");
-  const subsRow = pickerRow("If the video already has subtitles",
-    "Decide for me", async () => {
-      const v = await pickSubsMode(state.subsMode);
-      if (v !== null) {
-        state.subsMode = v;
-        subsRow.btn.textContent = {
-          "": "Decide for me", replace: "Swap them out",
-          keep: "Keep the originals", ignore: "Caption anyway",
-        }[v];
-      }
-    });
+  const resetTimelineBtn = el("button", { class: "btn btn-sm btn-ghost", type: "button" }, "Reset AI bounds");
+  resetTimelineBtn.onclick = () => {
+    if (edData?.original) {
+      startIn.value = Number(edData.original.start).toFixed(1);
+      endIn.value = Number(edData.original.end).toFixed(1);
+      updateDur();
+      toast("Reset timeline to AI original.", "is-ok");
+    }
+  };
 
-  const title = el("h2", { class: "t-title", style: "margin:0" },
-    clip.metadata?.title || `Clip ${index + 1}`);
-  const desc = el("p", { class: "t-dim", style: "margin:0;font-size:var(--text-sm)" },
-    clip.metadata?.description || "");
-  const regenBtn = el("button", { class: "btn btn-sm", type: "button" },
-    "Rewrite title & description");
+  // 2. Manual Framing Controls
+  const panXIn = el("input", { type: "range", min: "-100", max: "100", step: "5", value: String(edData?.crop_x_offset || 0), class: "input" });
+  const panXVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${panXIn.value}px`);
+  panXIn.oninput = () => { panXVal.textContent = `${panXIn.value}px`; };
+
+  const tiltYIn = el("input", { type: "range", min: "-100", max: "100", step: "5", value: String(edData?.crop_y_offset || 0), class: "input" });
+  const tiltYVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${tiltYIn.value}px`);
+  tiltYIn.oninput = () => { tiltYVal.textContent = `${tiltYIn.value}px`; };
+
+  const zoomIn = el("input", { type: "range", min: "1.0", max: "1.30", step: "0.02", value: String(edData?.zoom || 1.0), class: "input" });
+  const zoomVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${Number(zoomIn.value).toFixed(2)}x`);
+  zoomIn.oninput = () => { zoomVal.textContent = `${Number(zoomIn.value).toFixed(2)}x`; };
+
+  const resetFramingBtn = el("button", { class: "btn btn-sm btn-ghost", type: "button" }, "Reset Framing");
+  resetFramingBtn.onclick = () => {
+    panXIn.value = "0"; panXVal.textContent = "0px";
+    tiltYIn.value = "0"; tiltYVal.textContent = "0px";
+    zoomIn.value = "1.0"; zoomVal.textContent = "1.00x";
+  };
+
+  // 3. Caption & Subtitle Editor
+  const captionTextIn = el("textarea", { class: "input", rows: "3", placeholder: "Clip spoken transcription text..." });
+  captionTextIn.value = edData?.caption_text || "";
+
+  const PRESET_OPTIONS = [
+    { id: "modern-bold", label: "Modern Bold (High Impact)" },
+    { id: "minimal-clean", label: "Minimal Clean (Subtle Fade)" },
+    { id: "karaoke-highlight", label: "Karaoke Highlight (Word Pop)" },
+    { id: "creator-style", label: "Creator Style (Badge Box)" },
+    { id: "cinematic", label: "Cinematic (Warm Gold)" },
+    { id: "dynamic-social", label: "Dynamic Social (Neon Green)" },
+    { id: "karaoke-pop", label: "Karaoke Pop (Legacy)" },
+    { id: "bold-impact", label: "Bold Impact (Legacy)" }
+  ];
+  const presetSel = el("select", { class: "select" },
+    ...PRESET_OPTIONS.map((p) => el("option", p.id === state.preset ? { value: p.id, selected: "" } : { value: p.id }, p.label)));
+  presetSel.onchange = () => { state.preset = presetSel.value; };
+
+  const langSel = el("select", { class: "select" },
+    el("option", { value: "hinglish" }, "Hinglish (Latin alphabet)"),
+    el("option", { value: "hindi" }, "Hindi (Devanagari script)"),
+    el("option", { value: "english" }, "English"));
+  langSel.value = edData?.caption_lang || clip.lang || "hinglish";
+
+  const anchorIn = el("input", { type: "range", min: "0.52", max: "0.66", step: "0.01", value: String(edData?.caption_anchor || 0.60), class: "input" });
+  const anchorVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${Math.round(Number(anchorIn.value) * 100)}%`);
+  anchorIn.oninput = () => { anchorVal.textContent = `${Math.round(Number(anchorIn.value) * 100)}%`; };
+
+  // 4. Metadata Editor
+  const titleIn = el("input", { class: "input", type: "text", value: edData?.title || clip.metadata?.title || `Clip ${index + 1}` });
+  const descIn = el("textarea", { class: "input", rows: "2", placeholder: "Clip description..." });
+  descIn.value = edData?.description || clip.metadata?.description || "";
+  const tagsIn = el("input", { class: "input", type: "text", value: (edData?.hashtags || clip.metadata?.hashtags || []).join(" ") });
+  const hookIn = el("input", { class: "input", type: "text", value: edData?.hook || clip.hook || "" });
+
+  const regenBtn = el("button", { class: "btn btn-sm", type: "button" }, "Rewrite with AI");
   regenBtn.addEventListener("click", async () => {
     regenBtn.disabled = true;
     try {
-      const meta = await api.post(
-        `/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/metadata`);
-      title.textContent = meta.title || title.textContent;
-      desc.textContent = meta.description || desc.textContent;
+      const meta = await api.post(`/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/metadata`);
+      titleIn.value = meta.title || titleIn.value;
+      descIn.value = meta.description || descIn.value;
+      tagsIn.value = (meta.hashtags || []).join(" ");
       toast("Title and description rewritten.", "is-ok");
     } catch (e) { toast(e.message, "is-error"); }
     regenBtn.disabled = false;
   });
 
-  // inline re-render progress
-  const progWrap = el("div", { class: "edit-progress" });
-  progWrap.style.display = "none";
+  // 5. Audio Controls
+  const speechEnhanceToggle = toggle(edData?.speech_enhance ?? true, "Voice clarity & noise reduction (80Hz highpass, FFT denoise)");
+  const musicToggle = toggle(edData?.music_enabled ?? false, "Background music");
+  const musicVolIn = el("input", { type: "range", min: "-28", max: "-8", step: "1", value: String(edData?.music_volume_db || -18), class: "input" });
+  const musicVolVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${musicVolIn.value} dB`);
+  musicVolIn.oninput = () => { musicVolVal.textContent = `${musicVolIn.value} dB`; };
+
+  // Progress Bar for Export
+  const progWrap = el("div", { class: "edit-progress", style: "display:none;" });
   const progCanvas = el("canvas");
   const progLabel = el("span", { class: "t-mono t-dim" }, "");
   progWrap.append(progCanvas, progLabel);
 
-  const applyBtn = el("button", { class: "btn btn-primary", type: "button" },
-    "Re-make this clip");
+  // Save Edits (without full export)
+  const saveBtn = el("button", { class: "btn", type: "button" }, "Save Edits");
+  saveBtn.onclick = async () => {
+    saveBtn.disabled = true;
+    try {
+      await api.post(`/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/editor/save`, {
+        start: Number(startIn.value),
+        end: Number(endIn.value),
+        title: titleIn.value,
+        description: descIn.value,
+        hashtags: tagsIn.value.split(" ").filter(Boolean),
+        hook: hookIn.value,
+        caption_text: captionTextIn.value,
+        caption_preset: presetSel.value,
+        caption_lang: langSel.value,
+        caption_anchor: Number(anchorIn.value),
+        crop_x_offset: Number(panXIn.value),
+        crop_y_offset: Number(tiltYIn.value),
+        zoom: Number(zoomIn.value),
+        music_enabled: musicToggle.input.checked,
+        music_volume_db: Number(musicVolIn.value),
+        speech_enhance: speechEnhanceToggle.input.checked,
+      });
+      toast("Clip edits saved.", "is-ok");
+    } catch (err) { toast(err.message, "is-error"); }
+    saveBtn.disabled = false;
+  };
+
+  // Full Export
+  const exportBtn = el("button", { class: "btn btn-primary", type: "button" }, "Export Edited Clip");
   let dm = null;
   let stopWatch = null;
-  applyBtn.addEventListener("click", async () => {
+
+  exportBtn.addEventListener("click", async () => {
     const start = Number(startIn.value);
     const end = Number(endIn.value);
     if (!(end > start)) {
       toast("The end time must be after the start time.", "is-error");
       return;
     }
-    applyBtn.disabled = true;
+    exportBtn.disabled = true;
     progWrap.style.display = "";
     if (!dm) dm = createDotMatrix(progCanvas, { variant: "progress" });
     dm.update({ fraction: 0, state: "running" });
+
     try {
       const { run_id } = await api.post(
-        `/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/rerender`, {
+        `/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/editor/export`, {
           start, end,
-          preset: state.preset || null,
-          style_refine: styleToggle.input.checked,
-          subs_mode: state.subsMode || null,
+          title: titleIn.value,
+          description: descIn.value,
+          hashtags: tagsIn.value.split(" ").filter(Boolean),
+          hook: hookIn.value,
+          caption_text: captionTextIn.value,
+          caption_preset: presetSel.value,
+          caption_lang: langSel.value,
+          caption_anchor: Number(anchorIn.value),
+          crop_x_offset: Number(panXIn.value),
+          crop_y_offset: Number(tiltYIn.value),
+          zoom: Number(zoomIn.value),
+          music_enabled: musicToggle.input.checked,
+          music_volume_db: Number(musicVolIn.value),
+          speech_enhance: speechEnhanceToggle.input.checked,
         });
+
       stopWatch = watchRun(run_id, {
         onSnapshot: (snap) => {
           dm.update({ fraction: snap.overall || 0, state: "running" });
-          const running = (snap.stages || []).filter(
-            (s) => s.state === "running").at(-1);
+          const running = (snap.stages || []).filter((s) => s.state === "running").at(-1);
           progLabel.textContent = running ? running.label : "";
         },
         onDone: (result) => {
           dm.update({ state: "done" });
-          progLabel.textContent = "Done";
+          progLabel.textContent = "Exported";
           video.src = videoUrl();
-          if (result) {
-            startIn.value = Number(result.start).toFixed(1);
-            endIn.value = Number(result.end).toFixed(1);
-            if (result.metadata?.title) title.textContent = result.metadata.title;
-          }
-          toast("Clip updated.", "is-ok");
-          applyBtn.disabled = false;
+          toast("Edited clip successfully exported!", "is-ok");
+          exportBtn.disabled = false;
         },
-        onCancelled: () => { applyBtn.disabled = false; },
+        onCancelled: () => { exportBtn.disabled = false; },
         onError: (message) => {
           dm.update({ state: "error" });
           progLabel.textContent = "";
           toast(message, "is-error");
-          applyBtn.disabled = false;
+          exportBtn.disabled = false;
         },
       });
     } catch (e) {
       toast(e.message, "is-error");
       progWrap.style.display = "none";
-      applyBtn.disabled = false;
+      exportBtn.disabled = false;
     }
   });
+
+  const fullResetBtn = el("button", { class: "btn btn-danger btn-sm", type: "button" }, "Reset All to AI Original");
+  fullResetBtn.onclick = async () => {
+    const ok = await confirmDialog({
+      title: "Reset all edits?",
+      body: "This discards all manual trim, crop, caption, and metadata adjustments and reverts to the original AI settings.",
+      confirmLabel: "Reset Clip"
+    });
+    if (!ok) return;
+    try {
+      await api.post(`/api/jobs/${encodeURIComponent(jobName)}/clips/${index}/editor/reset`);
+      toast("Reverted to AI original.", "is-ok");
+      renderEditor(jobName, indexStr);
+    } catch (err) { toast(err.message, "is-error"); }
+  };
 
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Edit clip"),
+        el("div", { class: "t-label" }, "Advanced Clip Editing Studio"),
         el("h1", { class: "t-display" }, `Clip ${index + 1}`),
-        el("p", { class: "t-dim", style: "margin:4px 0 0" },
-          clip.source_name || job.source || "")),
-      el("a", { class: "btn btn-ghost",
-                href: `#/results/${encodeURIComponent(jobName)}` },
-        "Back to clips")),
+        el("p", { class: "t-dim", style: "margin:4px 0 0" }, clip.source_name || job.source || "")),
+      el("div", { style: "display:flex;gap:8px;align-items:center;" },
+        fullResetBtn,
+        el("a", { class: "btn btn-ghost", href: `#/results/${encodeURIComponent(jobName)}` }, "Back to clips"))),
     el("div", { class: "editor-grid" },
       el("div", { class: "editor-video" }, video),
-      el("div", { class: "editor-controls" },
-        el("div", { class: "card card-flat", style: "display:grid;gap:16px" },
-          field("Starts at (seconds in the original video)",
-            el("div", { class: "field-inline" }, startIn, "to", endIn, snapBtn)),
-          presetRow.node,
-          stylePreview,
-          styleToggle.node,
-          subsRow.node,
-          el("div", { class: "field-inline" }, applyBtn, progWrap)),
-        el("div", { class: "card card-flat", style: "display:grid;gap:12px" },
-          title, desc,
-          el("p", { class: "t-mono t-dim", style: "margin:0" },
-            (clip.metadata?.hashtags || []).join(" ")),
-          el("div", {}, regenBtn))))));
+      el("div", { class: "editor-controls", style: "display:grid;gap:16px;" },
+
+        // Section 1: Timeline
+        el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
+          el("div", { style: "display:flex;justify-content:space-between;align-items:center;" },
+            el("h3", { class: "t-title", style: "margin:0;" }, "1. Timeline & Duration"),
+            durLabel),
+          field("Clip Start & End (seconds)",
+            el("div", { class: "field-inline", style: "flex-wrap:wrap;gap:8px;" },
+              startIn, "to", endIn, snapBtn)),
+          el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center;" },
+            el("span", { class: "t-dim", style: "font-size:var(--text-xs);" }, "Trim start:"),
+            trimStartMinus, trimStartPlus,
+            el("span", { class: "t-dim", style: "font-size:var(--text-xs);margin-left:8px;" }, "Trim end:"),
+            trimEndMinus, trimEndPlus,
+            resetTimelineBtn)),
+
+        // Section 2: Manual Framing
+        el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
+          el("div", { style: "display:flex;justify-content:space-between;align-items:center;" },
+            el("h3", { class: "t-title", style: "margin:0;" }, "2. Framing & Composition"),
+            resetFramingBtn),
+          field("Horizontal Pan (px)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, panXIn, panXVal)),
+          field("Vertical Tilt (px)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, tiltYIn, tiltYVal)),
+          field("Manual Zoom Factor", el("div", { style: "display:flex;align-items:center;gap:10px;" }, zoomIn, zoomVal))),
+
+        // Section 3: Captions
+        el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
+          el("h3", { class: "t-title", style: "margin:0;" }, "3. Captions & Typography"),
+          field("Transcription Text", captionTextIn),
+          field("Preset Style", presetSel),
+          field("Language", langSel),
+          field("Vertical Position (% from top)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, anchorIn, anchorVal))),
+
+        // Section 4: Metadata
+        el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
+          el("div", { style: "display:flex;justify-content:space-between;align-items:center;" },
+            el("h3", { class: "t-title", style: "margin:0;" }, "4. Title & Metadata"),
+            regenBtn),
+          field("Title", titleIn),
+          field("Description", descIn),
+          field("Hashtags", tagsIn),
+          field("Opening Hook", hookIn)),
+
+        // Section 5: Audio
+        el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
+          el("h3", { class: "t-title", style: "margin:0;" }, "5. Professional Audio"),
+          speechEnhanceToggle.node,
+          musicToggle.node,
+          field("Music Bed Volume (dB)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, musicVolIn, musicVolVal))),
+
+        // Action Buttons
+        el("div", { class: "field-inline", style: "gap:12px;margin-top:8px;" },
+          saveBtn,
+          exportBtn,
+          progWrap)))));
 
   cleanup = () => { if (stopWatch) stopWatch(); if (dm) dm.destroy(); };
 }
@@ -1816,11 +1987,128 @@ async function renderSettings() {
   };
   renderUpdate(upd.state);
 
+  // Dynamic Ollama Model Manager (Stage 7)
+  let modelsData = null;
+  try {
+    modelsData = await api.get("/api/models");
+  } catch (err) {
+    console.warn("Could not load /api/models:", err);
+  }
+
+  const modelSelect = el("select", { class: "select" });
+  const modelInfoPanel = el("div", { class: "card card-flat", style: "display:grid;gap:8px;font-size:var(--text-sm);background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);padding:12px;border-radius:8px;" });
+
+  const populateModelDropdown = (models, activeModel) => {
+    modelSelect.replaceChildren();
+    if (!models || models.length === 0) {
+      modelSelect.append(el("option", { value: "" }, "No Ollama models found — is Ollama running?"));
+      modelInfoPanel.replaceChildren(el("div", { class: "t-dim" }, "No local models detected. Run 'ollama pull qwen3.5:4b' in your terminal."));
+      return;
+    }
+    models.forEach((m) => {
+      const isSel = m.name === activeModel;
+      const opt = el("option", isSel ? { value: m.name, selected: "" } : { value: m.name },
+        `${m.name} [${m.category || "INSTALLED"}] - ${m.size_gb} GB`);
+      modelSelect.append(opt);
+    });
+    updateModelInfo(activeModel, models);
+  };
+
+  const updateModelInfo = (modelName, models) => {
+    const m = (models || []).find((x) => x.name === modelName);
+    if (!m) {
+      modelInfoPanel.replaceChildren(el("div", { class: "t-dim" }, `Model "${modelName}" is not currently installed.`));
+      return;
+    }
+    const badgesRow = el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px;" },
+      ...(m.badges || [m.category || "LOCAL"]).map((b) => {
+        let badgeCls = "badge";
+        if (b.includes("RECOMMENDED")) badgeCls = "badge badge-ok";
+        else if (b.includes("HEAVY") || b.includes("NOT RECOMMENDED")) badgeCls = "badge badge-warn";
+        else if (b.includes("VISION")) badgeCls = "badge badge-info";
+        return el("span", { class: badgeCls }, b);
+      })
+    );
+    modelInfoPanel.replaceChildren(
+      el("div", { style: "display:flex;justify-content:space-between;align-items:center;" },
+        el("strong", { class: "t-mono" }, m.name),
+        el("span", { class: "t-dim" }, `${m.parameter_size || "Unknown params"} | ${m.size_gb} GB`)),
+      badgesRow,
+      el("div", { class: "t-dim", style: "font-size:var(--text-xs);" }, m.hardware_notes || m.description || "Local Ollama model.")
+    );
+  };
+
+  const initialModels = modelsData?.installed_models || [];
+  const currentActiveModel = s.ollama_model || modelsData?.active_model || "qwen3.5:4b";
+  populateModelDropdown(initialModels, currentActiveModel);
+
+  modelSelect.addEventListener("change", () => {
+    ollamaIn.value = modelSelect.value;
+    updateModelInfo(modelSelect.value, modelsData?.installed_models || []);
+  });
+
+  const refreshBtn = el("button", { class: "btn btn-sm", type: "button" }, "Refresh Models");
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = "Scanning Ollama…";
+    try {
+      const res = await api.post("/api/models/refresh");
+      modelsData = { installed_models: res.models, active_model: res.active_model };
+      populateModelDropdown(res.models, modelSelect.value || res.active_model);
+      toast(`Refreshed: ${res.count} Ollama model${res.count === 1 ? "" : "s"} detected.`, "is-ok");
+    } catch (err) {
+      toast(err.message, "is-error");
+    }
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = "Refresh Models";
+  });
+
+  const switchModelBtn = el("button", { class: "btn btn-sm btn-primary", type: "button" }, "Switch Active Model");
+  switchModelBtn.addEventListener("click", async () => {
+    const target = modelSelect.value || ollamaIn.value;
+    if (!target) return;
+    switchModelBtn.disabled = true;
+    switchModelBtn.textContent = "Switching…";
+    try {
+      await api.post("/api/models/active", { model: target });
+      ollamaIn.value = target;
+      toast(`Active model set to ${target}.`, "is-ok");
+    } catch (err) {
+      toast(err.message, "is-error");
+    }
+    switchModelBtn.disabled = false;
+    switchModelBtn.textContent = "Switch Active Model";
+  });
+
+  const memActionsRow = el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;" },
+    switchModelBtn,
+    refreshBtn,
+    el("button", {
+      class: "btn btn-sm btn-ghost",
+      type: "button",
+      onclick: async (e) => {
+        e.target.disabled = true;
+        try {
+          await api.post("/api/models/unload");
+          toast("Model unloaded — GPU VRAM freed.", "is-ok");
+        } catch (err) { toast(err.message, "is-error"); }
+        e.target.disabled = false;
+      }
+    }, "Free GPU VRAM (Unload)"));
+
+  const modelCard = el("div", { class: "card", style: "display:grid;gap:14px" },
+    el("h2", { class: "t-title", style: "margin:0" }, "Local AI Model Manager (Ollama)"),
+    el("div", { class: "t-dim", style: "font-size:var(--text-xs)" },
+      "Frameza operates 100% locally with high-accuracy content understanding, multimodal vision, and zero cloud API fees. Context is bounded to 8,192 tokens to fit safely within your RTX 5050 8GB VRAM."),
+    field("Select Installed Model", modelSelect),
+    modelInfoPanel,
+    memActionsRow);
+
   wrap.replaceChildren(
+    modelCard,
     el("div", { class: "card", style: "display:grid;gap:14px" },
       el("h2", { class: "t-title", style: "margin:0" }, "AI & Highlight Engine"),
       field("Highlight Provider", providerSel),
-      field("Ollama model (local AI)", ollamaIn),
       field("Gemini model (cloud optional)", gemIn),
       field("Groq model (cloud optional)", groqIn),
       field("Custom niches (comma-separated)", nichesIn)),

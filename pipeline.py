@@ -67,7 +67,8 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
             music_volume_db: float = -18.0, progress_cb=None,
             tracker=None, style_refine: bool | None = None,
             subs_mode: str | None = None, cancel=None,
-            edit_preset: str | None = None) -> dict:
+            edit_preset: str | None = None,
+            caption_language: str | None = None) -> dict:
     import captions as captions_mod
     import cut as cut_mod
     import highlights as hl
@@ -128,6 +129,7 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
         tracker.finish(name)
         return result
 
+    cap_lang = (caption_language or cfg.get("captions", {}).get("language", "hinglish")).lower()
     job = {
         "job_id": uuid.uuid4().hex[:12],
         "created": dt.datetime.now().isoformat(timespec="seconds"),
@@ -136,6 +138,7 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
         "settings": {"provider": resolved, "aspect": aspect,
                      "preset": preset or cfg["captions"]["preset"],
                      "edit_preset": edit_preset or "",
+                     "caption_language": cap_lang,
                      "debug": bool(debug)},
         "stages": {}, "clips": [], "notes": notes,
     }
@@ -169,6 +172,13 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
         # overall percentage still reaches 100%.
         tracker.skip("model_download")
         tracker.skip("model_load")
+
+        # Unload any active LLM from GPU VRAM before Faster-Whisper GPU allocation
+        try:
+            import llm_manager
+            llm_manager.unload_model()
+        except Exception as e:
+            log.debug("could not unload llm before transcribe: %s", e)
 
         transcript = _stage(
             "transcribe", "transcribing audio",
@@ -291,6 +301,14 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
         clips = []
         n = max(1, len(candidates))
         workers = _worker_count(cfg, n)
+
+        # Unload LLM from GPU VRAM before FFmpeg NVENC multi-worker rendering
+        try:
+            import llm_manager
+            llm_manager.unload_model()
+        except Exception as e:
+            log.debug("could not unload llm before render: %s", e)
+
         tracker.start("render", f"rendering {n} clips ({workers} workers)")
         # Seed an upfront render ETA from this machine's past throughput so the
         # UI shows an estimate before the first clip finishes.
@@ -316,7 +334,7 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
                     cut_mod, reframe_mod, captions_mod, metadata_mod,
                     scenes_mod, music_path, music_attr, music_volume_db,
                     tracker, edit_plans[i] if edit_plans else None,
-                    events): i
+                    events, caption_language=cap_lang): i
                     for i, cand in enumerate(candidates)}
                 for fut in as_completed(futures):
                     i = futures[fut]
@@ -391,7 +409,7 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                 preset, aspect, debug_dir, cut_mod, reframe_mod, captions_mod,
                 metadata_mod, scenes_mod, music_path=None, music_attr="",
                 music_volume_db=-18.0, tracker=None, edit_plan=None,
-                events=None) -> dict:
+                events=None, caption_language: str = "hinglish") -> dict:
     def _sub(frac: float) -> None:
         if tracker:
             tracker.item("render", f"clip_{i:02d}", frac)
@@ -491,6 +509,18 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                  for w in transcript["words"]
                  if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
         cap_kwargs = captions_mod.cta_from_cfg(cfg)
+
+    # Dynamic caption language: translate / transliterate words (e.g. Hindi, Hinglish, English)
+    # preserving exact audio timestamps and karaoke pop
+    if words and caption_language:
+        try:
+            import caption_lang as clang_mod
+            words = clang_mod.process_caption_language(
+                words, target_lang=caption_language, cfg=cfg, provider=provider
+            )
+        except Exception as e:
+            log.warning("caption language processing failed (%s) — using original words", e)
+
     if cfg.get("captions", {}).get("enabled") is False or preset == "none":
         cap_kwargs["captions_enabled"] = False
     final = captions_mod.caption_clip(source_for_captions, words,

@@ -165,6 +165,7 @@ class RunRequest(BaseModel):
     face_tracking: bool = True        # smart speaker follower vs center crop
     generate_captions: bool = True    # whether to burn captions
     generate_metadata: bool = True    # whether to generate AI titles/tags
+    caption_language: str = "hinglish" # "hinglish" | "hindi" | "english"
     # per-run style & branding (config.apply_run_options keys)
     cta_text: str = ""
     highlight_hex: str = ""
@@ -236,6 +237,8 @@ def _build_cfg(req: RunRequest, preset_opts: dict | None = None) -> dict:
         cfg.setdefault("captions", {})["enabled"] = False
     if not req.generate_metadata:
         cfg.setdefault("metadata", {})["enabled"] = False
+    if req.caption_language:
+        cfg.setdefault("captions", {})["language"] = req.caption_language.lower()
     return cfg
 
 
@@ -278,7 +281,8 @@ def start_run(req: RunRequest):
                 music_volume_db=music_volume,
                 tracker=h.tracker, style_refine=bool(req.style_refine),
                 subs_mode=req.subs_mode or None, cancel=h.cancel_event,
-                edit_preset=req.edit_preset or None)
+                edit_preset=req.edit_preset or None,
+                caption_language=req.caption_language)
             h.finish("done", result=job)
         except JobCancelled:
             h.finish("cancelled")

@@ -375,6 +375,35 @@ def gemini_chunk_events(chunk: dict, cfg: dict, prompt: str) -> list[dict]:
     return events
 
 
+def ollama_chunk_events(chunk: dict, cfg: dict, prompt: str) -> list[dict]:
+    key = _chunk_cache_key(chunk, prompt, "ollama")
+    cached = _cache_get(cfg, key)
+    if cached is not None:
+        log.info("chunk %s: ollama cache hit (%d events)",
+                 chunk["path"].name, len(cached))
+        return cached
+    media = _extract_frames(chunk, cfg)
+    if not media:
+        log.warning("chunk %s: no frames extracted — skipping ollama vision",
+                    chunk["path"].name)
+        return []
+    # Cap to at most 8 sampled frames per chunk for swift local vision inference
+    if len(media) > 8:
+        step = len(media) / 8
+        media = [media[int(i * step)] for i in range(8)]
+    try:
+        data = llm.complete_json(
+            "viral_events", "viral_events", prompt, provider="ollama",
+            cfg=cfg, media=media)
+    except LLMError as e:
+        log.warning("ollama vision event extraction failed (%s)", e)
+        return []
+    events = _to_absolute(data["events"], chunk["start_s"], chunk["seconds"],
+                          "ollama")
+    _cache_put(cfg, key, events)
+    return events
+
+
 def openrouter_chunk_events(chunk: dict, cfg: dict, prompt: str) -> list[dict]:
     key = _chunk_cache_key(chunk, prompt, "openrouter")
     cached = _cache_get(cfg, key)
@@ -443,7 +472,12 @@ def detect_events(video_path: str | Path, audio_path: str | Path,
     else:
         upload_ok = (ingest_info.get("source_type") == "url"
                      or bool(vcfg.get("allow_upload", False)))
-        if not upload_ok:
+        if name == "ollama":
+            # Local Ollama vision (Qwen 3.5): 100% private & local, no upload required!
+            local_vis = _cloud_events(video_path, duration, cfg, progress_cb, forced_provider="ollama")
+            events = merge_events(events, local_vis,
+                                  gap_s=float(vcfg.get("merge_gap_s", 2.0)))
+        elif not upload_ok:
             log.info("viral_v2: local source and viral_v2.allow_upload=false — "
                      "cloud video analysis skipped (set allow_upload: true to "
                      "enable); using audio-only events")
@@ -493,8 +527,11 @@ def _available_cloud_providers(cfg: dict) -> list[str]:
     return out
 
 
-def _cloud_events(video_path, duration, cfg, progress_cb) -> list[dict]:
-    providers = _available_cloud_providers(cfg)
+def _cloud_events(video_path, duration, cfg, progress_cb, forced_provider: str | None = None) -> list[dict]:
+    if forced_provider:
+        providers = [forced_provider]
+    else:
+        providers = _available_cloud_providers(cfg)
     if not providers:
         log.info("viral_v2: no cloud provider key available — audio-only events")
         return []
@@ -505,8 +542,8 @@ def _cloud_events(video_path, duration, cfg, progress_cb) -> list[dict]:
         log.warning("viral_v2: chunking failed (%s) — audio-only events", e)
         return []
 
-    fns = {"gemini": gemini_chunk_events, "openrouter": openrouter_chunk_events}
-    prompts = {"gemini": build_prompt(cfg), "openrouter": build_prompt(cfg, frames=True)}
+    fns = {"gemini": gemini_chunk_events, "openrouter": openrouter_chunk_events, "ollama": ollama_chunk_events}
+    prompts = {"gemini": build_prompt(cfg), "openrouter": build_prompt(cfg, frames=True), "ollama": build_prompt(cfg, frames=True)}
     events: list[dict] = []
     try:
         for i, chunk in enumerate(chunks):

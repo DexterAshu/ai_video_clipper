@@ -25,29 +25,30 @@ HOOK_KEYWORDS = {
     "simple", "easy", "free", "first", "last", "biggest", "question", "story",
 }
 
-PROMPT_TEMPLATE = """TASK: You are a short-form video editor. From the numbered
-candidate windows of a talk transcript below, choose the {n} moments most likely
-to succeed as standalone 30-60 second vertical clips.
+PROMPT_TEMPLATE = """TASK: You are an elite short-form video editor for YouTube Shorts, Instagram Reels, and TikTok.
+From the numbered candidate windows of the transcript below, choose the {n} most viral, engaging moments
+likely to succeed as standalone 30-60 second vertical clips.
 
-SELECTION CRITERIA (all must be weighed):
-- Strong hook within the first 3 seconds of the window
-- Emotionally engaging, surprising, or informative
-- Understandable with zero outside context
-- Avoid filler, long pauses, low-energy passages
-- Prefer clean sentence boundaries
+CRITICAL SELECTION CRITERIA:
+1. Viral Hook (First 3 seconds): The opening statement MUST instantly grab attention (curiosity gap, bold claim, surprising confession, question, or comedic punch).
+2. High Retention Value: Engaging storytelling, emotional reaction, laughter, insightful breakdown, or unexpected twist.
+3. Standalone Completeness: The clip must make complete sense on its own with zero outside context (clear setup, progression, and climax/punchline).
+4. Clean Sentence Boundaries: Ensure the thought begins cleanly and finishes completely; never cut off mid-thought or mid-sentence.
+5. Hindi / Hinglish Sensitivity: If the audio is in Hindi or Hinglish, preserve comedic timing, iconic cultural phrases, and emotional highs.
 
 CONSTRAINTS:
-- Use ONLY the start/end times of the given windows (seconds, may be adjusted
-  slightly but must stay within the transcript).
+- Use ONLY the start/end times of the given windows (seconds, may adjust within transcript boundaries).
 - Duration of every chosen clip must be between {min_s} and {max_s} seconds.
-- "hook" = the opening line a viewer hears first, quoted from the transcript.
+- "hook" = the exact punchy opening line a viewer hears first.
+- "reason" = concise explanation of why this moment will hook viewers and retain them.
+- "score" = predicted viral engagement score from 1.0 to 10.0 (where 9+ is top tier).
 - Return AT MOST {n} candidates, ranked strongest first.
 
 OUTPUT SCHEMA (respond with ONLY this JSON, no prose):
 {schema}
 
 EXAMPLE OUTPUT:
-{{"candidates": [{{"start": 12.4, "end": 58.1, "hook": "Most projects fail for one reason.", "reason": "strong contrarian hook, self-contained argument", "score": 8.7}}]}}
+{{"candidates": [{{"start": 12.4, "end": 48.1, "hook": "Most projects fail for one simple reason.", "reason": "strong contrarian hook with immediate value and complete punchline", "score": 9.2}}]}}
 
 CANDIDATE WINDOWS:
 {windows}

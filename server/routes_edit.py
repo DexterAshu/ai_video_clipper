@@ -199,3 +199,173 @@ def set_approval(job_name: str, index: int, req: ApprovalRequest):
         raise HTTPException(500, friendly(e, "Saving that decision"))
     invalidate_all_clips_cache()
     return {"approval": req.approval}
+
+
+# --- Advanced Clip Editing Studio Endpoints (Stage 7) -----------------------
+
+class EditorSaveRequest(BaseModel):
+    start: float
+    end: float
+    title: str = ""
+    description: str = ""
+    hashtags: list[str] = []
+    hook: str = ""
+    caption_text: str | None = None
+    caption_preset: str | None = None
+    caption_lang: str | None = None
+    caption_anchor: float | None = None
+    crop_x_offset: float = 0.0
+    crop_y_offset: float = 0.0
+    zoom: float = 1.0
+    music_enabled: bool = False
+    music_track: str | None = None
+    music_volume_db: float = -18.0
+    speech_enhance: bool = True
+
+
+@router.get("/api/jobs/{job_name}/clips/{index}/editor")
+def get_clip_editor(job_name: str, index: int):
+    job_dir = safe_job_path(job_name)
+    job_path = job_dir / "job.json"
+    if not job_path.exists():
+        raise HTTPException(404, "That run's files can't be found.")
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    clip = next((c for c in job.get("clips", []) if c.get("index") == index), None)
+    if not clip:
+        raise HTTPException(404, "That clip can't be found.")
+
+    clip_dir = job_dir / f"clip_{index:02d}"
+    meta_path = clip_dir / "metadata.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Source duration from ingest marker or video probe
+    ingest_marker = job_dir / "ingest.marker.json"
+    src_dur = 0.0
+    if ingest_marker.exists():
+        try:
+            idata = json.loads(ingest_marker.read_text(encoding="utf-8"))
+            src_dur = float(idata.get("duration", 0.0))
+        except Exception:
+            pass
+
+    # Subtitle / words from srt
+    words_text = ""
+    srt_path = clip_dir / "final.srt"
+    if srt_path.exists():
+        words_text = _srt_text(srt_path)
+
+    # Saved edit plan if exists
+    plan_path = clip_dir / "edit_plan.json"
+    saved_plan = {}
+    if plan_path.exists():
+        try:
+            saved_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    return {
+        "job_name": job_name,
+        "clip_index": index,
+        "source_name": clip.get("source_name") or job.get("source", ""),
+        "source_duration": src_dur,
+        "start": saved_plan.get("start", clip.get("start", 0.0)),
+        "end": saved_plan.get("end", clip.get("end", 0.0)),
+        "duration": saved_plan.get("duration", clip.get("duration", 0.0)),
+        "title": saved_plan.get("title", meta.get("title", clip.get("title", f"Clip {index + 1}"))),
+        "description": saved_plan.get("description", meta.get("description", "")),
+        "hashtags": saved_plan.get("hashtags", meta.get("hashtags", [])),
+        "hook": saved_plan.get("hook", clip.get("hook", "")),
+        "caption_text": saved_plan.get("caption_text", words_text),
+        "caption_preset": saved_plan.get("caption_preset", clip.get("preset", "modern-bold")),
+        "caption_lang": saved_plan.get("caption_lang", clip.get("lang", "hinglish")),
+        "caption_anchor": saved_plan.get("caption_anchor", 0.60),
+        "crop_x_offset": saved_plan.get("crop_x_offset", 0.0),
+        "crop_y_offset": saved_plan.get("crop_y_offset", 0.0),
+        "zoom": saved_plan.get("zoom", 1.0),
+        "music_enabled": saved_plan.get("music_enabled", False),
+        "music_track": saved_plan.get("music_track", ""),
+        "music_volume_db": saved_plan.get("music_volume_db", -18.0),
+        "speech_enhance": saved_plan.get("speech_enhance", True),
+        "original": {
+            "start": clip.get("start", 0.0),
+            "end": clip.get("end", 0.0),
+            "title": clip.get("title", f"Clip {index + 1}"),
+            "description": meta.get("description", ""),
+            "hashtags": meta.get("hashtags", []),
+            "preset": clip.get("preset", "modern-bold"),
+            "aspect": clip.get("aspect", "9:16"),
+        }
+    }
+
+
+@router.post("/api/jobs/{job_name}/clips/{index}/editor/save")
+def save_clip_editor(job_name: str, index: int, req: EditorSaveRequest):
+    job_dir = safe_job_path(job_name)
+    clip_dir = job_dir / f"clip_{index:02d}"
+    if not clip_dir.exists():
+        raise HTTPException(404, "That clip can't be found.")
+
+    plan_path = clip_dir / "edit_plan.json"
+    plan_data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    plan_path.write_text(json.dumps(plan_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Update metadata.json title/description/hashtags
+    meta_path = clip_dir / "metadata.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if req.title:
+                meta["title"] = req.title
+            if req.description:
+                meta["description"] = req.description
+            if req.hashtags:
+                meta["hashtags"] = req.hashtags
+            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    return {"ok": True, "saved": plan_data}
+
+
+@router.post("/api/jobs/{job_name}/clips/{index}/editor/export")
+def export_clip_editor(job_name: str, index: int, req: EditorSaveRequest):
+    """Export the edited clip with updated bounds, crop, captions, and audio settings."""
+    from rerender import rerender_clip
+    job_dir = safe_job_path(job_name)
+    if not (job_dir / "job.json").exists():
+        raise HTTPException(404, "That run's files can't be found.")
+
+    save_clip_editor(job_name, index, req)
+
+    handle = jobs.create(f"export_{uuid.uuid4().hex[:8]}")
+
+    def work(h: jobs.RunHandle) -> None:
+        try:
+            clip = rerender_clip(
+                job_dir,
+                index,
+                float(req.start),
+                float(req.end),
+                preset=req.caption_preset or None,
+                tracker=h.tracker
+            )
+            h.finish("done", result=clip)
+        except Exception as e:
+            h.finish("error", error=friendly(e, "Exporting your edited clip"))
+
+    jobs.launch(handle, work)
+    return {"run_id": handle.id}
+
+
+@router.post("/api/jobs/{job_name}/clips/{index}/editor/reset")
+def reset_clip_editor(job_name: str, index: int):
+    job_dir = safe_job_path(job_name)
+    clip_dir = job_dir / f"clip_{index:02d}"
+    plan_path = clip_dir / "edit_plan.json"
+    plan_path.unlink(missing_ok=True)
+    return {"ok": True, "reset": True}

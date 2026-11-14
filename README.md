@@ -16,11 +16,12 @@ Powered entirely by **local AI models and GPU acceleration**—with **zero manda
 
 - **Dual-Source Ingestion:** Instant YouTube video inspection & streaming download (`yt-dlp`) plus drag-and-drop local video file upload (supports MP4, MKV, MOV, WebM, AVI, FLV, M4V, TS, WMV).
 - **Local Speech-to-Text:** Fast, word-level audio transcription using **Faster-Whisper** on NVIDIA CUDA (`small` / `large-v3` models).
-- **Local AI Viral Moment Detection:** Finds punchy, high-retention segments using local **Ollama** (`llama3.2:3b` / `llama3.1`). Automatically falls back to deterministic rule-based scoring if the local LLM is unavailable.
-- **AI Social Package:** Automatically drafts engaging social media titles, descriptions, and hashtags tailored for TikTok, Reels, and Shorts.
-- **Smart Face Tracking & Reframing:** MediaPipe 2D face mesh and active-speaker tracking dynamically crops 16:9 widescreen footage into 9:16 vertical or 1:1 square videos with smooth exponential motion stabilization.
-- **Animated Karaoke Subtitles:** Generates word-by-word synchronized subtitles rendered via FFmpeg `libass` with selectable presets (`karaoke-pop`, `bold-impact`, `clean-minimal`, `highlight-box`) using bundled OFL Montserrat typography.
-- **Audio Ducking & Normalization:** Dual-filter chain ducks background music under spoken dialogue and normalizes overall audio levels to `-14 LUFS` (EBU R128 standard).
+- **Dynamic Ollama Model Manager:** Live local model discovery via Ollama API (`GET /api/tags`), dynamic hardware suitability classifications (`BEST RECOMMENDED`, `LIGHTWEIGHT/FAST`, `BALANCED`, `HEAVY`, `VERY HEAVY`, `VISION CAPABLE`), one-click "Refresh Models", active job switching safeguards, and automated GPU VRAM unloader (`keep_alive: 0`). Default recommended model: `qwen3.5:4b`.
+- **Advanced Clip Editing Studio:** Interactive timeline trimming, manual pan/tilt framing adjustments, zoom modulation (1.00x–1.30x), transcript editor, metadata editor with AI rewrite, and audio controls with instant export and 1-click AI reset.
+- **Intelligent 2-Shot Reframing & Dynamic Zoom:** MediaPipe face tracking with multi-person conversation framing (automatic 2-shot midpoint when subjects fit in 9:16), stationary deadband anti-jitter, 20-frame face recovery, shoulder awareness, and controlled dynamic zoom (1.05x–1.12x) on reaction events.
+- **Professional Animated Caption Engine:** 6 designer presets (`Modern Bold`, `Minimal Clean`, `Karaoke Highlight`, `Creator Style`, `Cinematic`, `Dynamic Social`) plus legacy backward compatibility, multilingual support (`Hinglish`, `Hindi Devanagari`, `English`), and bundled Google Noto Sans Devanagari fonts.
+- **Professional Local Audio Processing:** FFmpeg speech enhancement chain (`highpass=f=80`, adaptive FFT noise reduction `afftdn=nf=-25`, dialogue dynamic compression `acompressor`), smooth sidechain ducking, and -14 LUFS / -1.5 dBTP broadcast loudness normalization.
+- **Contextual Highlight Detection:** Identifies curiosity gaps, punchlines, and emotional reactions with zero-context standalone completeness and clean sentence boundary preservation.
 - **NVIDIA GPU Acceleration:** Fast video encoding using `h264_nvenc` on NVIDIA RTX GPUs (~3–5s per 15s clip) with automatic fallback to CPU `libx264`.
 - **Modern Web Dashboard:** Chromeless local desktop UI running on `http://127.0.0.1:7860` with real-time WebSocket progress, live log console, interactive video players, one-click social copying, individual clip downloads, full-project ZIP export, and searchable run history.
 

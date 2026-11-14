@@ -68,6 +68,77 @@ def put_settings(req: SettingsRequest):
     return get_settings()
 
 
+@router.get("/api/models")
+def get_models():
+    import llm_manager
+    cfg = load_config()
+    base_url = llm_manager.get_ollama_base_url(cfg)
+    available = llm_manager.list_available_models(base_url)
+    active = llm_manager.get_active_model(cfg)
+    fallback = llm_manager.get_fallback_model(cfg)
+    running = llm_manager.get_running_models(base_url)
+    return {
+        "active_model": active,
+        "fallback_model": fallback,
+        "catalog": llm_manager.MODEL_CATALOG,
+        "installed_models": available,
+        "running_models": running,
+    }
+
+
+@router.post("/api/models/refresh")
+def refresh_models():
+    """Fetch live installed models from Ollama /api/tags without server restart."""
+    import llm_manager
+    cfg = load_config()
+    base_url = llm_manager.get_ollama_base_url(cfg)
+    models = llm_manager.list_available_models(base_url)
+    active = llm_manager.get_active_model(cfg)
+    is_active_installed = any(m["name"] == active for m in models)
+    return {
+        "ok": True,
+        "models": models,
+        "count": len(models),
+        "active_model": active,
+        "is_active_installed": is_active_installed
+    }
+
+
+class SwitchModelRequest(BaseModel):
+    model: str
+
+
+@router.post("/api/models/active")
+def switch_active_model(req: SwitchModelRequest):
+    import llm_manager
+    from server import jobs
+
+    if jobs.has_active_runs():
+        raise HTTPException(409, "Cannot switch models while a processing job is actively running.")
+
+    model_name = req.model.strip()
+    if not model_name:
+        raise HTTPException(422, "Model name required")
+
+    available = llm_manager.list_available_models()
+    if available and not any(m["name"] == model_name for m in available):
+        raise HTTPException(400, f"Model '{model_name}' is not installed in Ollama.")
+
+    # Release previous model before activating new one
+    llm_manager.unload_model()
+
+    health = llm_manager.check_model_health(model_name)
+    save_config({"llm": {"ollama_model": model_name}})
+    return {"ok": True, "active_model": model_name, "health": health}
+
+
+@router.post("/api/models/unload")
+def unload_active_model():
+    import llm_manager
+    ok = llm_manager.unload_model()
+    return {"ok": ok}
+
+
 @router.get("/api/system")
 def system_info():
     import updater

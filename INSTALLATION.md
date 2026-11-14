@@ -36,11 +36,15 @@ This guide walks you through setting up Frameza on a Windows 11 PC equipped with
 ### Step 2.2: Install Ollama (Local AI Engine)
 1. Download Ollama for Windows from [https://ollama.com/download/windows](https://ollama.com/download/windows).
 2. Run `OllamaSetup.exe` and complete the installer.
-3. Open Command Prompt and pull the recommended model:
+3. Open Command Prompt and pull the recommended primary model:
    ```cmd
-   ollama run llama3.2:3b
+   ollama pull qwen3.5:4b
    ```
-   Once the prompt `>>>` appears, type `/bye` to exit. The model is now cached locally.
+   *Optional fast fallback:*
+   ```cmd
+   ollama pull llama3.2:3b
+   ```
+   `qwen3.5:4b` provides deep reasoning, Hinglish/Hindi nuance, and multimodal vision. Frameza dynamically discovers any models installed on your Ollama server with hardware classification badges directly in **Settings → Local AI Model Manager**. All models run 100% locally.
 
 ### Step 2.3: Set Up Portable FFmpeg with NVENC & libass
 Frameza looks for local FFmpeg binaries in `tools/ffmpeg/bin/`.

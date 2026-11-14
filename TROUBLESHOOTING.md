@@ -65,40 +65,43 @@ This guide addresses common questions, error messages, and solutions when runnin
      ```cmd
      ollama serve
      ```
-  2. Ensure model `llama3.2:3b` is pulled:
+  2. Ensure model `qwen3.5:4b` or `llama3.2:3b` is pulled:
      ```cmd
-     ollama run llama3.2:3b
+     ollama pull qwen3.5:4b
+     ollama pull llama3.2:3b
      ```
 
-### Issue: High RAM or VRAM usage during LLM generation
-- **Cause:** Running multiple heavy applications concurrently with an 8GB VRAM GPU.
-- **Solution:** `llama3.2:3b` requires only ~2.2 GB VRAM. Close other heavy GPU tasks (games, 3D rendering) while running Frameza for optimal processing speed.
+### Issue: GPU Out of Memory (CUDA OOM) with Ollama + Whisper + NVENC
+- **Symptoms:** Whisper or NVENC crashes with CUDA out of memory on 8GB laptops.
+- **Cause:** Large models default to 262,144 context length if unconstrained, consuming up to 14GB of memory.
+- **Solution:** Frameza automatically bounds Ollama to `num_ctx: 8192` (3.7GB VRAM) and automatically triggers `keep_alive: 0` to unload LLM weights before Faster-Whisper and NVENC run. You can also click **"Free GPU VRAM (Unload)"** in Settings.
+- **Model Recommendation:** Use models marked `[BEST RECOMMENDED]` (`qwen3.5:4b`) or `[LIGHTWEIGHT / FAST]` (`llama3.2:3b`). Avoid models marked `[VERY HEAVY / NOT RECOMMENDED]` (`gemma4:26b`) which exceed 8GB VRAM.
+
+### Issue: "Cannot switch models while a processing job is actively running" (HTTP 409)
+- **Cause:** Switching AI models mid-job can corrupt highlight detection prompts or cause VRAM competition.
+- **Solution:** Wait for the active video clipping job to complete before switching models in Settings, or cancel the active run from the progress screen.
 
 ---
 
-## 4. Video Ingestion & YouTube Issues
+## 4. Editing Studio & Reframing
 
-### Issue: YouTube download fails or is throttled
-- **Symptoms:** `yt-dlp` returns `HTTP Error 429: Too Many Requests` or slow download speeds.
-- **Solution:**
-  1. YouTube frequently updates its bot detection algorithms. Update `yt-dlp` to the latest release:
-     ```powershell
-     .\.venv\Scripts\pip.exe install --upgrade yt-dlp
-     ```
-  2. Alternatively, download the video manually and drag-and-drop the local MP4 file directly into the Frameza UI.
+### Issue: Multi-person conversation cuts off one of the speakers
+- **Cause:** In wide 16:9 shots, participants sitting far apart may not fit in a 9:16 vertical crop.
+- **Solution:** 
+  1. Frameza automatically detects 2-shot conversations: if participants are within 75% of the crop width, it centers between them.
+  2. If they are farther apart, the active speaker is tracked. In the **Advanced Clip Editing Studio** (`#/edit`), use the **Horizontal Pan** slider to manually nudge framing toward either speaker, or zoom out slightly to capture both.
 
-### Issue: Local video upload rejected (`Unsupported format` or `422 Unprocessable`)
-- **Cause:** File is empty (0 bytes) or has an unsupported container format.
-- **Solution:** Ensure the video is a valid MP4, MKV, MOV, WebM, or AVI file with non-zero size.
+### Issue: Camera jitter when speaker is stationary
+- **Solution:** Frameza includes a stationary subject deadband ($\pm 4\text{px}$) to suppress micro-movement when subjects are seated. If manual framing is desired, adjust coordinates in the Clip Editing Studio.
 
 ---
 
 ## 5. Subtitles & Audio
 
-### Issue: Subtitle text has missing characters or symbols
-- **Cause:** Custom fonts missing specific unicode glyphs.
-- **Solution:** Use the default Montserrat font family (included in `assets/fonts/`), which supports full Latin, extended Latin, and common international punctuation.
-
-### Issue: Background music is too loud or quiet
-- **Solution:** In the web UI under **Audio & Music**, adjust the **Music Volume** slider (default is `-18 dB`). The automatic sidechain ducking filter automatically lowers music volume by 12 dB whenever speech is detected.
+### Issue: Background noise, mic hum or low rumble in exported clips
+- **Solution:** Frameza's Stage 7 professional audio pipeline includes automatic speech enhancement:
+  - 80Hz highpass filter to eliminate HVAC hum and mic handling thumps.
+  - Adaptive FFT noise reduction (`afftdn=nf=-25`) to drop ambient room noise.
+  - Dialogue compression (`acompressor`) and -14 LUFS loudness normalization.
+  You can toggle this on or off per clip in the Clip Editing Studio under **5. Professional Audio**.
 

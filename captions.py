@@ -174,6 +174,14 @@ def _logo_graph(vf_parts: list[str], wm: dict) -> str:
             f"[base][wm]overlay={x.format(m=margin)}:{y.format(m=margin)}[vout]")
 
 
+def _has_devanagari(words: list[dict]) -> bool:
+    for w in words:
+        text = str(w.get("word", ""))
+        if any("\u0900" <= char <= "\u097F" for char in text):
+            return True
+    return False
+
+
 def write_ass(words: list[dict], ass_path: Path, cfg: dict, preset_name: str,
               play_w: int = 1080, play_h: int = 1920,
               anchor: float | None = None, cta: dict | None = None,
@@ -181,6 +189,8 @@ def write_ass(words: list[dict], ass_path: Path, cfg: dict, preset_name: str,
     ccfg = cfg["captions"]
     preset = ccfg["presets"][preset_name]
     family, bold = _font(preset["font"])
+    if _has_devanagari(words):
+        family = "Noto Sans Devanagari"
     margin_v = int(ccfg["bottom_margin_px"])
     scale = int(preset.get("highlight_scale", 100))
     style_kind = preset.get("style", "karaoke")

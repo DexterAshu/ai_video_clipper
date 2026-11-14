@@ -17,7 +17,10 @@ llm:
   backoff_base_seconds: 1.5
   gemini_model: gemini-flash-latest
   groq_model: llama-3.3-70b-versatile
-  ollama_model: llama3.1
+  ollama_model: qwen3.5:4b          # recommended default local LLM (Qwen 3.5 4B)
+  ollama_fallback_model: llama3.2:3b # fallback model if primary fails/missing
+  context_length: 8192              # keep VRAM usage strictly within 3.7GB
+  temperature: 0.3
   ollama_base_url: http://localhost:11434
   # OpenRouter vision model for viral_v2's frame-batch fallback. Free-model ids
   # rotate — update here, never hardcoded in code. Needs OPENROUTER_API_KEY in .env.
@@ -89,6 +92,73 @@ captions:
     margin_px: 40
     font_file: assets/fonts/Montserrat-Bold.ttf
   presets:
+    modern-bold:
+      font: Montserrat Black
+      font_size: 84
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H0000E5FF"  # vibrant gold/yellow BGR
+      outline_color: "&H00000000"
+      outline: 5
+      shadow: 2
+      uppercase: true
+      highlight_scale: 110
+      style: karaoke
+    minimal-clean:
+      font: Montserrat Regular
+      font_size: 64
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H00E0E0E0"
+      outline_color: "&H00000000"
+      outline: 2
+      shadow: 0
+      uppercase: false
+      highlight_scale: 100
+      style: fade
+    karaoke-highlight:
+      font: Montserrat ExtraBold
+      font_size: 88
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H0000D7FF"  # gold/cyan karaoke pop
+      outline_color: "&H00000000"
+      outline: 5
+      shadow: 1
+      uppercase: false
+      highlight_scale: 112
+      style: karaoke
+    creator-style:
+      font: Montserrat Bold
+      font_size: 80
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H00FFFFFF"
+      box_color: "&H00241CE8"        # red-orange creator badge (BGR)
+      outline_color: "&H00000000"
+      outline: 2
+      shadow: 1
+      uppercase: true
+      highlight_scale: 106
+      style: box
+    cinematic:
+      font: Montserrat Regular
+      font_size: 60
+      primary_color: "&H00E8E8E8"
+      highlight_color: "&H0037AFD4"  # warm cinematic gold (BGR)
+      outline_color: "&H80000000"
+      outline: 2
+      shadow: 2
+      uppercase: false
+      highlight_scale: 100
+      style: fade
+    dynamic-social:
+      font: Montserrat Black
+      font_size: 86
+      primary_color: "&H00FFFFFF"
+      highlight_color: "&H0014FF39"  # neon green viral social pop (BGR)
+      outline_color: "&H00000000"
+      outline: 6
+      shadow: 2
+      uppercase: true
+      highlight_scale: 115
+      style: karaoke
     karaoke-pop:
       font: Montserrat ExtraBold
       font_size: 88
@@ -140,6 +210,9 @@ reframe:
   proxy_height: 360             # MediaPipe tracking runs on a 360p proxy (fast);
   proxy_fps: 12                 # crop coords scale back to full res
   face_detect_every_n_frames: 5
+  dynamic_zoom:
+    enabled: true
+    max_zoom: 1.12
   ema_alpha: 0.15               # crop path smoothing
   lookahead_frames: 12          # future frames influence current crop
   max_center_velocity_px: 14.0  # per-frame threshold (1080-wide crop space)
@@ -254,8 +327,12 @@ music:
   loudnorm:                     # final-mix normalization (platform standard);
     enabled: true               # runs on every clip, music or not
     i: -14                      # integrated loudness target (LUFS)
-    tp: -1                      # true-peak ceiling (dBTP)
+    tp: -1.5                    # true-peak ceiling (dBTP)
     lra: 11
+
+audio:
+  speech_enhance: true          # local speech enhancement: highpass 80Hz, afftdn -25dB, acompressor
+  normalize: true               # -14 LUFS loudness normalization
 
 sfx:
   # Sound effects layered onto the voice track at cut points and emphasis

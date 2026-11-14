@@ -1,20 +1,21 @@
 """Per-shot intelligent reframing to vertical (or square) crops.
 
-Strategy per sampled frame (every N frames):
-  1. MediaPipe face detection — largest face wins; with multiple faces the
-     "active speaker" is approximated as largest face weighted by mouth-openness
-     VARIANCE from Face Mesh landmarks (no audio-visual ASD — out of scope).
-  2. No face → motion-centroid fallback (frame differencing).
-  3. No motion → center crop with headroom.
-
-The sparse targets are interpolated to every frame, then per-scene-segment:
-look-ahead smoothing (centered moving average) → EMA → velocity clamp.
-Smoothness is MEASURABLE: path_metrics() reports max per-frame crop-center
-velocity/acceleration in output-pixel space; enforce_smoothness() clamps and
-verifies against config thresholds (unit-tested pure functions).
-
-Rendering: ffmpeg sendcmd drives a dynamic crop filter (decode+encode stays in
-ffmpeg; audio copied)."""
+Features:
+  1. MediaPipe face detection + face mesh mouth openness variance to identify
+     the active speaker among multiple candidates.
+  2. Persistent subject tracking with hysteresis and dwell-time: prevents
+     erratic flapping between speakers and eliminates empty-center smearing.
+  3. Adaptive vertical positioning & headroom law:
+     - Places the subject's face in the upper third (rule of thirds: 25-36% from top).
+     - Maintains 12-18% headroom above the head crown.
+     - Adapts crop scale on wide shots so subjects aren't pushed into the bottom third
+       under massive empty dark curtains.
+  4. 2D smooth trajectory follower: both x-center and y-offset are smoothed
+     with look-ahead moving average and acceleration-limited follower.
+  5. Rendering: FFmpeg sendcmd drives dynamic crop (x and y) + Lanczos scaling.
+  6. Automated quality validation: validate_reframing() computes framing balance
+     scores and detects low/unbalanced subjects.
+"""
 from __future__ import annotations
 
 import json
@@ -63,10 +64,8 @@ def clamp_velocity(path: list[float], max_v: float) -> list[float]:
 
 def follow_path(targets: list[float], max_v: float, max_a: float) -> list[float]:
     """Acceleration-limited trapezoidal follower: tracks `targets` while
-    guaranteeing |velocity| ≤ max_v and |Δvelocity| ≤ max_a per frame BY
-    CONSTRUCTION (velocity clamping alone spikes acceleration when noisy
-    targets flip direction). Braking distance keeps it from oscillating.
-    Pure, unit-tested."""
+    guaranteeing |velocity| <= max_v and |Delta velocity| <= max_a per frame BY
+    CONSTRUCTION. Pure, unit-tested."""
     if not targets:
         return []
     pos, vel = float(targets[0]), 0.0
@@ -96,49 +95,30 @@ def path_metrics(path: list[float]) -> dict:
 def enforce_smoothness(path: list[float], rcfg: dict,
                        scale: float = 1.0) -> tuple[list[float], dict, bool]:
     """Run the accel-limited follower (thresholds are in OUTPUT px; `scale`
-    converts source px → output px) and verify metrics against config."""
+    converts source px -> output px) and verify metrics against config."""
     s = max(scale, 1e-6)
-    max_v = rcfg["max_center_velocity_px"] / s
-    max_a = rcfg["max_center_accel_px"] / s
+    max_v = rcfg.get("max_center_velocity_px", 28.0) / s
+    max_a = rcfg.get("max_center_accel_px", 6.0) / s
     followed = follow_path(path, max_v, max_a)
     m = path_metrics([p * scale for p in followed])
-    ok = (m["max_velocity"] <= rcfg["max_center_velocity_px"] + 1e-3
-          and m["max_accel"] <= rcfg["max_center_accel_px"] + 1e-3)
+    ok = (m["max_velocity"] <= rcfg.get("max_center_velocity_px", 28.0) + 1e-3
+          and m["max_accel"] <= rcfg.get("max_center_accel_px", 6.0) + 1e-3)
     return followed, m, ok
 
 
 def crop_geometry(w: int, h: int, aspect: str) -> tuple[int, int, int]:
-    """(crop_w, crop_h, y0) for the target aspect within a w×h source."""
+    """(crop_w, crop_h, y0) for the target aspect within a w x h source."""
     if aspect == "1:1":
         side = min(w, h)
         return side, side, (h - side) // 2
     cw = int(h * 9 / 16) & ~1  # 9:16 (default)
     if cw <= w:
         return cw, h, 0
-    ch = int(w * 16 / 9) & ~1  # source narrower than 9:16 — crop height
+    ch = int(w * 16 / 9) & ~1  # source narrower than 9:16 - crop height
     return w, min(ch, h), max(0, (h - ch) // 2)
 
 
 # ---------------------------------------------------------- target tracking
-
-class _FaceTracker:
-    """Per-run mouth-openness history, bucketed by horizontal position."""
-
-    def __init__(self, width: int, buckets: int = 6):
-        self.width = width
-        self.buckets = buckets
-        self.hist: dict[int, deque] = defaultdict(lambda: deque(maxlen=12))
-
-    def bucket(self, cx: float) -> int:
-        return min(self.buckets - 1, int(cx / self.width * self.buckets))
-
-    def add(self, cx: float, mouth_open: float) -> None:
-        self.hist[self.bucket(cx)].append(mouth_open)
-
-    def variance(self, cx: float) -> float:
-        h = self.hist[self.bucket(cx)]
-        return float(np.var(h)) if len(h) >= 3 else 0.0
-
 
 def _mouth_openness(landmarks, h: int) -> float:
     """Lip gap (landmarks 13/14) normalized by face height (10/152)."""
@@ -147,35 +127,157 @@ def _mouth_openness(landmarks, h: int) -> float:
     return abs(bottom.y - top.y) * h / max(fh, 1e-6)
 
 
+class SubjectTracker:
+    """Persistent subject tracker across frames: tracks multiple faces,
+    maintains spatial track identity, scores active speakers, applies
+    hysteresis to prevent erratic switching, provides deadband anti-jitter,
+    temporary face disappearance recovery, and multi-person 2-shot framing."""
+
+    def __init__(self, w: int, h: int, deadband_px: float = 4.0):
+        self.w = w
+        self.h = h
+        self.deadband_px = deadband_px
+        self.tracks: dict[int, dict] = {}
+        self.next_id = 0
+        self.active_id: int | None = None
+        self.active_dwell = 0
+        self.mouth_hist: dict[int, deque] = defaultdict(lambda: deque(maxlen=16))
+        self.frames_since_face = 0
+
+    def update(self, faces_data: list[tuple[float, float, float, float, float, float]],
+               frame_idx: int) -> dict | None:
+        """faces_data: list of (cx, cy, fw, fh, conf, mouth_open)."""
+        if not faces_data:
+            self.frames_since_face += 1
+            # Temporary face disappearance recovery: hold track position up to 20 frames (~1.6s at 12fps)
+            if self.frames_since_face <= 20 and self.active_id in self.tracks:
+                rec = dict(self.tracks[self.active_id])
+                rec["recovered"] = True
+                return rec
+            return None
+
+        self.frames_since_face = 0
+        matched_tracks = set()
+        for cx, cy, fw, fh, conf, m_open in faces_data:
+            best_id, best_dist = None, 0.25 * self.w
+            for tid, t in self.tracks.items():
+                if tid in matched_tracks:
+                    continue
+                d = math.hypot(cx - t["cx"], cy - t["cy"])
+                if d < best_dist:
+                    best_dist = d
+                    best_id = tid
+            if best_id is None:
+                best_id = self.next_id
+                self.next_id += 1
+                self.tracks[best_id] = {
+                    "cx": cx, "cy": cy, "w": fw, "h": fh,
+                    "first_frame": frame_idx, "last_frame": frame_idx
+                }
+            matched_tracks.add(best_id)
+            t = self.tracks[best_id]
+
+            # Deadband anti-jitter: suppress micro-jitter when subject is stationary
+            dx = cx - t["cx"]
+            dy = cy - t["cy"]
+            eff_cx = t["cx"] if abs(dx) < self.deadband_px else cx
+            eff_cy = t["cy"] if abs(dy) < self.deadband_px else cy
+
+            t["cx"] = 0.65 * t["cx"] + 0.35 * eff_cx
+            t["cy"] = 0.65 * t["cy"] + 0.35 * eff_cy
+            t["w"] = 0.65 * t["w"] + 0.35 * fw
+            t["h"] = 0.65 * t["h"] + 0.35 * fh
+            t["last_frame"] = frame_idx
+            self.mouth_hist[best_id].append(m_open)
+
+        # prune stale tracks not seen for > 24 frames (~2.0s at 12fps)
+        stale = [tid for tid, t in self.tracks.items() if frame_idx - t["last_frame"] > 24]
+        for tid in stale:
+            del self.tracks[tid]
+            if tid in self.mouth_hist:
+                del self.mouth_hist[tid]
+
+        if not self.tracks:
+            return None
+
+        # Multi-person 2-shot conversation framing:
+        # If 2 or more faces are detected, check if their span fits inside 9:16 crop width
+        if len(faces_data) >= 2:
+            crop_w_est = int(self.h * 9 / 16)
+            sorted_faces = sorted(faces_data, key=lambda f: f[2] * f[3], reverse=True)[:2]
+            f1, f2 = sorted_faces[0], sorted_faces[1]
+            min_x = min(f1[0] - f1[2] / 2.0, f2[0] - f2[2] / 2.0)
+            max_x = max(f1[0] + f1[2] / 2.0, f2[0] + f2[2] / 2.0)
+            span_x = max_x - min_x
+            if span_x <= 0.75 * crop_w_est:
+                multi_cx = (min_x + max_x) / 2.0
+                multi_cy = min(f1[1], f2[1])
+                return {
+                    "cx": multi_cx,
+                    "cy": multi_cy,
+                    "w": span_x,
+                    "h": max(f1[3], f2[3]),
+                    "multi_person": True,
+                    "num_faces": len(faces_data),
+                    "first_frame": frame_idx,
+                    "last_frame": frame_idx
+                }
+
+        # score tracks based on size + mouth variance
+        scored = []
+        for tid, t in self.tracks.items():
+            hist = self.mouth_hist[tid]
+            var = float(np.var(hist)) if len(hist) >= 3 else 0.0
+            score = (t["w"] * t["h"]) * (1.0 + 3.0 * min(var * 100.0, 2.0))
+            scored.append((tid, score, t))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top_tid, top_score, top_t = scored[0]
+
+        # hysteresis / stickiness: don't flap on minor noise
+        if self.active_id in self.tracks:
+            curr_score = next((s for tid, s, _ in scored if tid == self.active_id), 0.0)
+            if top_tid != self.active_id and top_score > curr_score * 1.6:
+                self.active_dwell += 1
+                if self.active_dwell > 7:  # hold for ~0.6s at 12fps before switching
+                    self.active_id = top_tid
+                    self.active_dwell = 0
+            else:
+                self.active_dwell = 0
+        else:
+            self.active_id = top_tid
+            self.active_dwell = 0
+
+        res = dict(self.tracks[self.active_id])
+        res["multi_person"] = False
+        return res
+
+
 def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
-                  every: int | None = None) -> tuple[list[float | None], dict]:
-    """Sampled target x-centers (None = no signal → later filled with center).
-    Returns (targets_per_sampled_frame, stats). `every` is the frame sampling
-    stride; on a reduced-fps proxy pass 1 (every frame)."""
+                  every: int | None = None) -> tuple[list[dict | None], dict]:
+    """Sampled targets: returns list of target dicts:
+       {'cx': float, 'cy': float, 'fw': float, 'fh': float, 'kind': str}
+       or None when no target found."""
     import cv2
     import mediapipe as mp
 
     every = max(1, int(every if every is not None
-                       else rcfg["face_detect_every_n_frames"]))
+                       else rcfg.get("face_detect_every_n_frames", 1)))
     cap = cv2.VideoCapture(str(clip_path))
-    tracker = _FaceTracker(w)
-    targets: list[float | None] = []
-    # per-sample provenance ("face"/"motion"/"center") — viral_v2's reaction
-    # cuts only pin to targets that actually came from a detected face
+    tracker = SubjectTracker(w, h)
+    targets: list[dict | None] = []
     kinds: list[str] = []
     stats: dict = {"face": 0, "motion": 0, "center": 0}
     prev_gray = None
 
+    min_conf = float(rcfg.get("min_face_confidence", 0.40))
     with mp.solutions.face_detection.FaceDetection(
-            model_selection=1,
-            min_detection_confidence=rcfg["min_face_confidence"]) as fd, \
+            model_selection=1, min_detection_confidence=min_conf) as fd, \
          mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False, max_num_faces=4,
-            refine_landmarks=False,
-            min_detection_confidence=rcfg["min_face_confidence"]) as fm:
+            refine_landmarks=False, min_detection_confidence=min_conf) as fm:
         idx = 0
         while True:
-            # grab() skips the expensive decode for frames we won't inspect
             if idx % every:
                 if not cap.grab():
                     break
@@ -185,40 +287,53 @@ def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
             if not ok:
                 break
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces = []
             det = fd.process(rgb)
-            for d in (det.detections or []):
-                bb = d.location_data.relative_bounding_box
-                cx = (bb.xmin + bb.width / 2) * w
-                faces.append((cx, bb.width * bb.height))
-            if faces:
-                if len(faces) > 1:
-                    mesh = fm.process(rgb)
-                    for fl in (mesh.multi_face_landmarks or []):
-                        lm = fl.landmark
-                        fcx = float(np.mean([p.x for p in lm])) * w
-                        tracker.add(fcx, _mouth_openness(lm, h))
-                    best = max(faces, key=lambda f: f[1] *
-                               (1.0 + 2.0 * min(tracker.variance(f[0]) * 100, 2.0)))
-                else:
-                    best = faces[0]
-                targets.append(float(np.clip(best[0], 0, w)))
+            faces_data = []
+            if det and det.detections:
+                mesh = fm.process(rgb)
+                m_map = {}
+                if mesh and mesh.multi_face_landmarks:
+                    for fl in mesh.multi_face_landmarks:
+                        fcx = float(np.mean([p.x for p in fl.landmark])) * w
+                        m_map[fcx] = _mouth_openness(fl.landmark, h)
+                for d in det.detections:
+                    bb = d.location_data.relative_bounding_box
+                    cx = (bb.xmin + bb.width / 2.0) * w
+                    cy = (bb.ymin + bb.height / 2.0) * h
+                    fw = bb.width * w
+                    fh = bb.height * h
+                    closest_m = 0.0
+                    if m_map:
+                        closest_m = min(m_map.items(), key=lambda x: abs(x[0] - cx))[1]
+                    faces_data.append((cx, cy, fw, fh, float(d.score[0]), closest_m))
+
+            active_t = tracker.update(faces_data, idx)
+            if active_t is not None:
+                targets.append({
+                    "cx": float(active_t["cx"]),
+                    "cy": float(active_t["cy"]),
+                    "fw": float(active_t["w"]),
+                    "fh": float(active_t["h"]),
+                    "kind": "face"
+                })
                 kinds.append("face")
                 stats["face"] += 1
             else:
                 gray = cv2.cvtColor(cv2.resize(frame, (w // 2 or 1, h // 2 or 1)),
                                     cv2.COLOR_BGR2GRAY)
-                t = None
+                t_dict = None
                 if prev_gray is not None:
                     diff = cv2.absdiff(gray, prev_gray)
                     _, th = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
                     m = cv2.moments(th)
-                    if m["m00"] > 800:  # enough moving mass
-                        t = float(np.clip(m["m10"] / m["m00"] * 2, 0, w))
+                    if m["m00"] > 800:
+                        mcx = float(np.clip(m["m10"] / m["m00"] * 2, 0, w))
+                        mcy = float(np.clip(m["m01"] / m["m00"] * 2, 0, h))
+                        t_dict = {"cx": mcx, "cy": mcy, "fw": 0.0, "fh": 0.0, "kind": "motion"}
                 prev_gray = gray
-                targets.append(t)
-                kinds.append("motion" if t is not None else "center")
-                stats["motion" if t is not None else "center"] += 1
+                targets.append(t_dict)
+                kinds.append("motion" if t_dict is not None else "center")
+                stats["motion" if t_dict is not None else "center"] += 1
             idx += 1
     cap.release()
     stats["kinds"] = kinds
@@ -229,8 +344,7 @@ def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
 
 def _build_proxy(source: Path, start: float, dur: float, proxy: Path,
                  proxy_h: int, proxy_fps: float) -> None:
-    """Small, cheap, low-fps proxy of just the clip window for MediaPipe
-    tracking. Fast keyframe seek (-ss before -i), video only."""
+    """Small, cheap, low-fps proxy for tracking. Fast keyframe seek."""
     run_ffmpeg(["-ss", f"{start:.3f}", "-i", source, "-t", f"{dur:.3f}", "-an",
                 "-vf", f"scale=-2:{proxy_h},fps={proxy_fps}",
                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", proxy],
@@ -239,11 +353,8 @@ def _build_proxy(source: Path, start: float, dur: float, proxy: Path,
 
 def event_cut_bounds(cut_frames: list[int], event_frames: list[int],
                      n_frames: int, hold_frames: int) -> tuple[list[int], set[int]]:
-    """Combine scene-cut and reaction-event boundaries with hysteresis: event
-    frames are hard cuts; any other boundary within hold_frames of an accepted
-    event frame (either side — two resets in quick succession is exactly the
-    flap the hold prevents) is suppressed. Pure, unit-tested. Returns
-    (bounds incl. 0/n_frames, accepted event frames)."""
+    """Combine scene-cut and reaction-event boundaries with hysteresis.
+    Pure, unit-tested."""
     hold = max(0, int(hold_frames))
     accepted: set[int] = set()
     last_event = -hold - 1
@@ -266,33 +377,15 @@ def reframe_clip(source: str | Path, start: float, end: float,
                  bottom_exclusion_ratio: float = 0.0,
                  h_bias_center: float = -1.0,
                  event_cuts_rel: list[dict] | None = None) -> dict:
-    """Reframe the [start, end] window of `source` to the target aspect in a
-    SINGLE re-encode (seek + crop + scale straight from the source — no
-    intermediate full-res cut). Tracking runs on a 360p low-fps proxy; crop
-    coordinates are scaled back to full resolution. Returns a metrics dict.
-
-    Style-refiner inputs (both default to no-op, so style-off output is
-    unchanged):
-      bottom_exclusion_ratio > 0 (REPLACE mode) — crop only the top
-        (1 - ratio) of the frame so a burned subtitle band at the bottom is
-        excluded; the tighter crop scales back up (natural zoom compensation).
-      h_bias_center in [0,1] (KEEP mode) — pull the horizontal crop center
-        toward this fraction of width so a centered source subtitle survives
-        the 9:16 crop. -1 disables.
-
-    viral_v2 input (default None = no-op, output unchanged):
-      event_cuts_rel — [{"t": clip-relative seconds, "actors_hint": str}] for
-        reaction events. Each becomes a HARD CUT (smoothing never crosses it);
-        when tracking saw a face at that moment the crop snaps to it and holds
-        for viral_v2.min_shot_s (hysteresis). No face there → no pin, no cut
-        beyond the smoothing reset — never guess-jump."""
+    """Intelligently reframe the [start, end] window of `source` to the target aspect
+    with subject-aware 2D tracking and adaptive headroom. Single re-encode."""
     cfg = cfg or load_config()
-    rcfg = cfg["reframe"]
+    rcfg = cfg.get("reframe", {})
     source, out_path = Path(source), Path(out_path)
     if not source.exists():
         raise ReframeError(f"source not found: {source}")
     if aspect == "16:9":
-        raise ReframeError("16:9 is pass-through — pipeline must skip reframe")
+        raise ReframeError("16:9 is pass-through - pipeline must skip reframe")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     src = info or probe(source)
@@ -300,134 +393,325 @@ def reframe_clip(source: str | Path, start: float, end: float,
     dur = end - start
     if dur <= 0:
         raise ReframeError(f"invalid range: start={start} end={end}")
+
     ow = int(rcfg.get("output", {}).get("width", 1080))
     oh = int(rcfg.get("output", {}).get("height", 1920))
     if aspect == "9:16":
-        pass  # ow, oh as configured
+        pass
     elif aspect == "1:1":
         oh = ow
     else:
         ow, oh = (1920, 1080) if ow >= 1080 else (1280, 720)
-    cw, ch, y0 = crop_geometry(w, h, aspect)
-    # REPLACE mode: exclude a bottom subtitle band by cropping only the top
-    # (1 - ratio) of the frame, then recompute the aspect crop inside it.
-    if bottom_exclusion_ratio and 0.0 < bottom_exclusion_ratio < 0.5 and aspect == "9:16":
-        eff_h = max(16, int(h * (1.0 - bottom_exclusion_ratio)) & ~1)
-        cw, ch, _ = crop_geometry(w, eff_h, aspect)
-        y0 = 0  # anchor to the top; the excluded band sits below ch
-        log.info("REPLACE: excluding bottom %.0f%% (crop %dx%d, y0=0)",
-                 bottom_exclusion_ratio * 100, cw, ch)
+
+    # Base crop geometry
+    base_cw, base_ch, base_y0 = crop_geometry(w, h, aspect)
     n_frames = max(1, int(round(dur * fps)))
 
     proxy_h = int(rcfg.get("proxy_height", 360))
     proxy_fps = float(rcfg.get("proxy_fps", 12))
     proxy = out_path.with_name(out_path.stem + "_proxy.mp4")
+
     if rcfg.get("tracking") is False or rcfg.get("face_tracking") is False:
-        targets, stats, pw = [], {"face": 0, "motion": 0, "center": 1}, w
+        raw_targets, stats, pw, ph = [], {"face": 0, "motion": 0, "center": 1}, w, h
     else:
         try:
             _build_proxy(source, start, dur, proxy, proxy_h, proxy_fps)
             pinfo = probe(proxy)
-            pw = int(pinfo["width"])
-            targets, stats = track_targets(proxy, rcfg, pw, int(pinfo["height"]),
-                                           every=1)
-        except Exception as e:  # noqa: BLE001 — tracking failure → center fallback
-            log.warning("tracking failed (%s) — center crop with headroom", e)
-            targets, stats, pw = [], {"face": 0, "motion": 0, "center": 1}, w
+            pw, ph = int(pinfo["width"]), int(pinfo["height"])
+            raw_targets, stats = track_targets(proxy, rcfg, pw, ph, every=1)
+        except Exception as e:
+            log.warning("tracking failed (%s) - center crop with headroom", e)
+            raw_targets, stats, pw, ph = [], {"face": 0, "motion": 0, "center": 1}, w, h
         finally:
             proxy.unlink(missing_ok=True)
 
-    center = w / 2.0
-    half = cw / 2.0
-    x_scale = w / max(pw, 1)  # proxy-x → source-x
-    # clamp raw targets into the reachable range BEFORE smoothing so the
-    # follower's guarantees survive (a post-hoc position clamp would kink
-    # the path and break the acceleration bound)
-    sampled = [float(np.clip(t * x_scale if t is not None else center,
-                             half, w - half))
-               for t in targets] or [center]
-    # interpolate sampled proxy targets (spaced 1/proxy_fps apart) onto every
-    # output frame time
-    sample_times = np.arange(len(sampled)) / proxy_fps
-    frame_times = np.arange(n_frames) / fps
-    full = np.interp(frame_times, sample_times, sampled).tolist()
+    scale_x = w / max(pw, 1)
+    scale_y = h / max(ph, 1)
 
-    # KEEP mode: bias the horizontal crop center toward h_bias_center*width so a
-    # centered source subtitle survives the crop. Blending toward a constant
-    # target keeps the path smooth (the follower's bounds still hold).
+    # 1. Determine optimal crop dimensions per subject scale
+    # If aspect is 9:16, check whether the subject is small in a wide shot
+    target_chs = []
+    face_heights = []
+    for t in raw_targets:
+        if t and t.get("kind") == "face" and t.get("fh", 0) > 0:
+            fh_src = t["fh"] * scale_y
+            face_heights.append(fh_src)
+            # If face is small (< 160px on 1080p), zoom in (min crop_h = 720px)
+            if aspect == "9:16" and fh_src < 160:
+                ch_val = int(np.clip(fh_src * 5.8, int(h * 0.65), h)) & ~1
+            else:
+                ch_val = base_ch
+            target_chs.append(ch_val)
+        else:
+            target_chs.append(base_ch)
+
+    # For rock-solid video encoding without frame-size resizing artifacts,
+    # select a stable optimal crop height for the clip
+    if target_chs and aspect == "9:16":
+        med_ch = int(np.median(target_chs)) & ~1
+        cw = int(med_ch * 9 / 16) & ~1
+        ch = med_ch
+    else:
+        cw, ch = base_cw, base_ch
+
+    # REPLACE mode: bottom subtitle exclusion
+    if bottom_exclusion_ratio and 0.0 < bottom_exclusion_ratio < 0.5 and aspect == "9:16":
+        eff_h = max(16, int(h * (1.0 - bottom_exclusion_ratio)) & ~1)
+        cw, ch, _ = crop_geometry(w, eff_h, aspect)
+
+    half_w = cw / 2.0
+
+    # 2. Compute dynamic crop x and y targets
+    target_xs: list[float] = []
+    target_ys: list[float] = []
+    last_x = w / 2.0
+    last_y = 0.0
+
+    for t in raw_targets:
+        if t is not None:
+            cx = t["cx"] * scale_x
+            cy = t["cy"] * scale_y
+            fh = t.get("fh", 0) * scale_y
+
+            # Horizontal centering
+            tx = float(np.clip(cx, half_w, w - half_w))
+
+            # Vertical headroom & shoulder awareness (Headroom law: place head top at ~13-16% of crop_h)
+            if t.get("kind") == "face" and fh > 0:
+                face_top = cy - fh / 2.0
+                head_top = face_top - 0.18 * fh
+                headroom_px = 0.14 * ch
+                desired_y = head_top - headroom_px
+                # Shoulder awareness: accommodate upper torso (cy + 1.25 * fh)
+                shoulder_bottom = cy + 1.25 * fh
+                if desired_y + ch < shoulder_bottom:
+                    desired_y = max(0.0, shoulder_bottom - ch)
+                ty = float(np.clip(desired_y, 0, h - ch))
+            else:
+                # Fallback to centering around motion/previous position
+                ty = float(np.clip(cy - ch * 0.35, 0, h - ch))
+
+            last_x = tx
+            last_y = ty
+        else:
+            tx = last_x
+            ty = last_y
+
+        target_xs.append(tx)
+        target_ys.append(ty)
+
+    if not target_xs:
+        target_xs = [w / 2.0]
+        target_ys = [0.0]
+
+    # Interpolate sampled proxy targets onto every output frame
+    sample_times = np.arange(len(target_xs)) / proxy_fps
+    frame_times = np.arange(n_frames) / fps
+    full_x = np.interp(frame_times, sample_times, target_xs).tolist()
+    full_y = np.interp(frame_times, sample_times, target_ys).tolist()
+
+    # KEEP mode: bias horizontal crop toward center subtitle if requested
     if 0.0 <= h_bias_center <= 1.0:
-        bias_x = float(np.clip(h_bias_center * w, half, w - half))
-        full = [float(np.clip(p + 0.6 * (bias_x - p), half, w - half)) for p in full]
+        bias_x = float(np.clip(h_bias_center * w, half_w, w - half_w))
+        full_x = [float(np.clip(p + 0.6 * (bias_x - p), half_w, w - half_w)) for p in full_x]
         log.info("KEEP: biasing horizontal crop toward x=%.0f", bias_x)
 
-    # per-scene segments: smoothing resets at shot boundaries
-    cut_frames = sorted({int(t * fps) for t in (scene_cuts_rel or [])
-                         if 0 < t < dur})
-    # viral_v2 reaction cuts: hard-cut to the tracked face at the event start.
-    # Only events where tracking actually saw a face qualify (kinds check) —
-    # otherwise keep the current target, never guess-jump.
+    # Per-scene segments: smoothing resets at shot boundaries
+    cut_frames = sorted({int(t * fps) for t in (scene_cuts_rel or []) if 0 < t < dur})
     kinds = stats.get("kinds", [])
     hold_frames = int(float(cfg.get("viral_v2", {}).get("min_shot_s", 1.5)) * fps)
     event_frames = []
     for e in (event_cuts_rel or []):
         t = float(e.get("t", -1.0))
-        if not 0.0 < t < dur:
-            continue
-        s_idx = int(round(t * proxy_fps))
-        if 0 <= s_idx < len(kinds) and kinds[s_idx] == "face":
-            event_frames.append(int(t * fps))
-    bounds, accepted = event_cut_bounds(cut_frames, event_frames, n_frames,
-                                        hold_frames)
-    for f in accepted:  # pin the crop on the reacting face for the hold window
-        full[f:min(f + hold_frames, n_frames)] = \
-            [full[f]] * (min(f + hold_frames, n_frames) - f)
-    if accepted:
-        log.info("reaction cuts: %d hard cut(s) at frames %s (hold %d frames)",
-                 len(accepted), sorted(accepted), hold_frames)
-    scale = ow / cw  # source px -> output px
-    path, all_ok, worst = [], True, {"max_velocity": 0.0, "max_accel": 0.0}
-    for a, b in zip(bounds[:-1], bounds[1:]):
-        seg = smooth_path(full[a:b], rcfg["ema_alpha"], rcfg["lookahead_frames"])
-        seg, m, ok = enforce_smoothness(seg, rcfg, scale)
-        path.extend(seg)
-        all_ok &= ok
-        worst = {k: max(worst[k], m[k]) for k in worst}
+        if 0 < t < dur:
+            s_idx = int(round(t * proxy_fps))
+            if 0 <= s_idx < len(kinds) and kinds[s_idx] == "face":
+                event_frames.append(int(t * fps))
 
-    # ffmpeg sendcmd file: one crop-x command per frame
+    bounds, accepted = event_cut_bounds(cut_frames, event_frames, n_frames, hold_frames)
+    for f in accepted:
+        full_x[f:min(f + hold_frames, n_frames)] = [full_x[f]] * (min(f + hold_frames, n_frames) - f)
+        full_y[f:min(f + hold_frames, n_frames)] = [full_y[f]] * (min(f + hold_frames, n_frames) - f)
+
+    scale = ow / cw  # source px -> output px
+    path_x, path_y = [], []
+    all_ok, worst = True, {"max_velocity": 0.0, "max_accel": 0.0}
+
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        seg_x = smooth_path(full_x[a:b], rcfg.get("ema_alpha", 0.12), rcfg.get("lookahead_frames", 12))
+        seg_x, mx, ok_x = enforce_smoothness(seg_x, rcfg, scale)
+        path_x.extend(seg_x)
+
+        seg_y = smooth_path(full_y[a:b], rcfg.get("ema_alpha", 0.12), rcfg.get("lookahead_frames", 12))
+        seg_y, my, ok_y = enforce_smoothness(seg_y, rcfg, scale)
+        path_y.extend(seg_y)
+
+        all_ok &= (ok_x and ok_y)
+        worst = {k: max(worst[k], mx[k], my[k]) for k in worst}
+
+    # Controlled dynamic zoom
+    zoom_cfg = rcfg.get("dynamic_zoom", {})
+    zoom_enabled = bool(zoom_cfg.get("enabled", True))
+    max_zoom = float(np.clip(zoom_cfg.get("max_zoom", 1.12), 1.05, 1.18))
+    zooms = np.ones(n_frames, dtype=float)
+
+    if zoom_enabled and (event_cuts_rel or []):
+        for ev in event_cuts_rel:
+            t_ev = float(ev.get("t", -1.0))
+            if 0 < t_ev < dur:
+                f_ev = int(t_ev * fps)
+                ramp_in = max(1, int(0.3 * fps))
+                hold_len = max(1, int(1.0 * fps))
+                ramp_out = max(1, int(0.4 * fps))
+                total_ev_frames = ramp_in + hold_len + ramp_out
+                for k in range(total_ev_frames):
+                    frame_i = f_ev + k
+                    if 0 <= frame_i < n_frames:
+                        if k < ramp_in:
+                            alpha = 0.5 * (1.0 - math.cos(math.pi * k / ramp_in))
+                        elif k < ramp_in + hold_len:
+                            alpha = 1.0
+                        else:
+                            out_k = k - (ramp_in + hold_len)
+                            alpha = 0.5 * (1.0 + math.cos(math.pi * out_k / ramp_out))
+                        target_z = 1.0 + (max_zoom - 1.0) * alpha
+                        zooms[frame_i] = max(zooms[frame_i], target_z)
+
+    # Suppress zoom during multi-person shots so both faces stay fully framed
+    if raw_targets:
+        for i in range(n_frames):
+            s_idx = min(int(round((i / fps) * proxy_fps)), len(raw_targets) - 1)
+            if s_idx >= 0 and raw_targets[s_idx] and raw_targets[s_idx].get("multi_person"):
+                zooms[i] = 1.0
+
+    # ffmpeg sendcmd file: crop x, y, w, h command per frame
     cmd_file = out_path.with_suffix(".cmds.txt")
     with open(cmd_file, "w", encoding="ascii") as f:
-        for i, p in enumerate(path):
-            f.write(f"{i / fps:.4f} crop@dyn x {p - half:.1f};\n")
+        for i in range(n_frames):
+            z_i = float(zooms[i])
+            cw_i = int(cw / z_i) & ~1
+            ch_i = int(ch / z_i) & ~1
+            top_x = max(0.0, min(w - cw_i, path_x[i] - cw_i / 2.0))
+            top_y = max(0.0, min(h - ch_i, path_y[i]))
+            f.write(f"{i / fps:.4f} crop@dyn w {cw_i}, crop@dyn h {ch_i}, crop@dyn x {top_x:.1f}, crop@dyn y {top_y:.1f};\n")
+
+    init_top_x = max(0.0, min(w - cw, path_x[0] - half_w))
+    init_top_y = max(0.0, min(h - ch, path_y[0]))
 
     vf = (f"sendcmd=f='{filter_path(cmd_file)}',"
-          f"crop@dyn=w={cw}:h={ch}:x={max(0.0, path[0] - half):.1f}:y={y0},"
+          f"crop@dyn=w={cw}:h={ch}:x={init_top_x:.1f}:y={init_top_y:.1f},"
           f"scale={ow}:{oh}:flags=lanczos,setsar=1")
-    # single re-encode from source: fast seek, crop, scale, and re-encode audio
-    # for the same window (aac keeps sync across arbitrary start times)
+
     run_ffmpeg(["-ss", f"{start:.3f}", "-i", source, "-t", f"{dur:.3f}",
                 "-vf", vf] + video_encode_args(cfg)
                + ["-c:a", "aac", "-b:a", cfg["render"]["audio_bitrate"],
                   "-movflags", "+faststart", out_path])
 
-    metrics = {"aspect": aspect, "crop": [cw, ch], "output": [ow, oh],
-               "tracking": {k: v for k, v in stats.items() if k != "kinds"},
-               "smoothness": worst,
-               "smoothness_ok": bool(all_ok),
-               "segments": len(bounds) - 1,
-               "event_cuts": sorted(round(f / fps, 2) for f in accepted)}
-    log.info("reframed %s [%.1f-%.1f]: tracking=%s smoothness=%s ok=%s",
-             source.name, start, end, stats,
+    metrics = {
+        "aspect": aspect,
+        "crop": [cw, ch],
+        "output": [ow, oh],
+        "dynamic_zoom": {"enabled": zoom_enabled, "max_applied_zoom": round(float(np.max(zooms)), 3)},
+        "tracking": {k: v for k, v in stats.items() if k != "kinds"},
+        "smoothness": worst,
+        "smoothness_ok": bool(all_ok),
+        "segments": len(bounds) - 1,
+        "event_cuts": sorted(round(f / fps, 2) for f in accepted),
+        "mean_face_height": round(float(np.mean(face_heights)), 1) if face_heights else 0.0
+    }
+    log.info("reframed %s [%.1f-%.1f]: crop=%dx%d tracking=%s smoothness=%s ok=%s",
+             source.name, start, end, cw, ch, stats,
              {k: round(v, 2) for k, v in worst.items()}, all_ok)
 
     if debug_dir:
         Path(debug_dir).mkdir(parents=True, exist_ok=True)
         (Path(debug_dir) / f"{out_path.stem}_croppath.json").write_text(
-            json.dumps({"metrics": metrics, "path_every_10": path[::10]}),
+            json.dumps({"metrics": metrics, "path_x_every_10": path_x[::10],
+                        "path_y_every_10": path_y[::10]}),
             encoding="utf-8")
     if not cmd_file.exists() or not out_path.exists():
         raise ReframeError("reframe output missing")
     cmd_file.unlink(missing_ok=True)
     return metrics
+
+
+def validate_reframing(clip_path: str | Path, aspect: str = "9:16",
+                       n_samples: int = 12) -> dict:
+    """Automated visual quality validation for reframed clips. Evaluates face
+    visibility, vertical framing balance, headroom, and flags low-placed subjects."""
+    import cv2
+    import mediapipe as mp
+
+    clip_path = Path(clip_path)
+    if not clip_path.exists():
+        return {"error": f"file not found: {clip_path}"}
+
+    cap = cv2.VideoCapture(str(clip_path))
+    total_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+
+    if total_f <= 0:
+        cap.release()
+        return {"error": "unreadable video"}
+
+    step = max(1, total_f // n_samples)
+    detected_faces = 0
+    top_pcts = []
+    headroom_pcts = []
+    low_subject_frames = 0
+
+    with mp.solutions.face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.40) as fd:
+        for idx in range(0, total_f, step):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if not ok:
+                break
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            det = fd.process(rgb)
+            if det and det.detections:
+                detected_faces += 1
+                # largest face in frame
+                best = max(det.detections,
+                           key=lambda d: d.location_data.relative_bounding_box.width *
+                                         d.location_data.relative_bounding_box.height)
+                bb = best.location_data.relative_bounding_box
+                y_top = float(bb.ymin)
+                fh = float(bb.height)
+                top_pcts.append(y_top)
+                headroom_pcts.append(max(0.0, y_top - 0.15 * fh))
+                if y_top > 0.52:  # face top sits in the lower half of frame
+                    low_subject_frames += 1
+
+    cap.release()
+    samples_checked = len(top_pcts) or 1
+    mean_top = float(np.mean(top_pcts)) if top_pcts else 0.5
+    mean_headroom = float(np.mean(headroom_pcts)) if headroom_pcts else 0.5
+    detection_ratio = detected_faces / max(1, (total_f // step) or 1)
+
+    # Ideal portrait eye level sits around 25-36% from top
+    # Score penalizes subjects pushed into lower half (mean_top > 0.45)
+    score = 100.0
+    if mean_top > 0.50:
+        score -= min(60.0, (mean_top - 0.50) * 200.0)
+    elif mean_top < 0.10:
+        score -= min(40.0, (0.10 - mean_top) * 200.0)
+
+    if low_subject_frames > samples_checked * 0.3:
+        score -= 25.0
+
+    score = max(0.0, min(100.0, score))
+
+    return {
+        "samples_checked": samples_checked,
+        "face_detected_ratio": round(detection_ratio, 2),
+        "mean_face_top_pct": round(mean_top * 100.0, 1),
+        "mean_headroom_pct": round(mean_headroom * 100.0, 1),
+        "is_low_subject": bool(mean_top > 0.52 or low_subject_frames > 2),
+        "composition_score": round(score, 1)
+    }
 
 
 if __name__ == "__main__":
