@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from config import ROOT, load_config
+from config import ROOT, WORKSPACES_SUBDIR, base_output_dir, load_config
 from logutil import get_logger
 from server.copy import friendly
 
@@ -27,9 +27,28 @@ def output_root() -> Path:
 
 def safe_job_path(job_name: str, *parts: str) -> Path:
     """Resolve a path under output/ and refuse anything that escapes it."""
-    root = output_root()
-    p = (root / job_name).joinpath(*parts).resolve()
-    if not p.is_relative_to(root):
+    base = base_output_dir().resolve()
+    curr = output_root()
+    # 1. Check current scoped workspace path
+    target = (curr / job_name).resolve()
+    if not (target.exists() and target.is_relative_to(base)):
+        # 2. Check default workspace path
+        target = (base / job_name).resolve()
+        if not (target.exists() and target.is_relative_to(base)):
+            # 3. Search across all workspace subfolders in output/_workspaces/*
+            ws_root = (base / WORKSPACES_SUBDIR).resolve()
+            found = False
+            if ws_root.is_dir():
+                for ws_dir in ws_root.iterdir():
+                    candidate = (ws_dir / job_name).resolve()
+                    if ws_dir.is_dir() and candidate.exists() and candidate.is_relative_to(base):
+                        target = candidate
+                        found = True
+                        break
+            if not found:
+                target = (curr / job_name).resolve()
+    p = target.joinpath(*parts).resolve()
+    if not p.is_relative_to(base):
         raise HTTPException(404, "File not found.")
     return p
 
@@ -244,9 +263,8 @@ def dashboard_stats():
 @router.delete("/api/jobs/{job_name}")
 def delete_job(job_name: str):
     """Delete a complete past job directory from disk."""
-    root = output_root()
-    job_dir = (root / job_name).resolve()
-    if not job_dir.is_relative_to(root) or not job_dir.is_dir():
+    job_dir = safe_job_path(job_name)
+    if not job_dir.is_dir():
         raise HTTPException(404, "That job cannot be found.")
     try:
         shutil.rmtree(job_dir)
@@ -441,7 +459,10 @@ def list_fonts():
 @router.get("/api/presets")
 def list_presets():
     cfg = load_config()
-    return {"presets": sorted(cfg["captions"]["presets"].keys()),
+    presets_list = sorted(cfg["captions"]["presets"].keys())
+    if "none" not in presets_list:
+        presets_list.append("none")
+    return {"presets": presets_list,
             "default": cfg["captions"]["preset"]}
 
 
@@ -450,7 +471,7 @@ def style_preview(preset: str, font: str | None = None):
     """Real-burn caption preview PNG (cached by style_preview)."""
     from style_preview import preview_png
     cfg = load_config()
-    if preset not in cfg["captions"]["presets"]:
+    if preset != "none" and preset not in cfg["captions"]["presets"]:
         raise HTTPException(404, "That caption style doesn't exist.")
     try:
         return FileResponse(str(preview_png(preset, font or None, cfg)))

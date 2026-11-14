@@ -289,7 +289,7 @@ body.dragging .drop-hint {
   display: flex; align-items: center; gap: var(--sp-3);
   color: var(--ink-dim);
 }
-.clip-score { display: flex; align-items: center; gap: var(--sp-3); }
+.clip-score { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; min-width: 0; }
 .clip-actions {
   display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
   padding-top: var(--sp-1);

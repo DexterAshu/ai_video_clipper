@@ -31,7 +31,10 @@ _KEYWORDS: dict[str, list[str]] = {
                 "my guest", "great question"],
     "comedy": ["funny", "joke", "jokes", "laugh", "laughing", "hilarious",
                "comedy", "comedian", "prank", "sketch", "standup",
-               "stand-up", "punchline", "humor"],
+               "stand-up", "punchline", "humor", "roast", "roasted",
+               "crowdwork", "crowd work", "latent", "comic", "improv",
+               "satire", "parody", "entertainment", "entertaining",
+               "hasi", "mazaak", "hasna", "chutkule"],
     "gaming": ["gaming", "gamer", "gameplay", "video game", "video games",
                "level up", "boss fight", "loot", "fps", "speedrun", "clutch",
                "respawn", "loadout", "minecraft", "fortnite", "twitch",
@@ -81,10 +84,11 @@ def allowed_niches(cfg: dict) -> list[str]:
 
 def rule_based_niche(text: str, title: str = "",
                      hashtags: list | None = None) -> str:
-    """Deterministic keyword classifier — the always-available, key-free path.
-    Title and hashtag hits weigh 3x a transcript hit (they're author-chosen
-    signal); best-scoring niche wins, ties resolve by NICHES order, no
-    evidence at all -> "other"."""
+    """Deterministic keyword classifier — transcript-first, key-free path.
+    Transcript keyword hits carry primary weight (3x), while title and hashtag
+    hits provide bounded supporting evidence (capped at 4 points) so metadata
+    hallucinations can never overpower the spoken words. Best-scoring niche wins;
+    ties resolve by NICHES order; no evidence at all -> 'other'."""
     body = (text or "").lower()
     head = " ".join([title or ""] +
                     [str(h).lstrip("#") for h in (hashtags or [])]).lower()
@@ -93,8 +97,10 @@ def rule_based_niche(text: str, title: str = "",
         score = 0
         for kw in words:
             pat = r"\b" + re.escape(kw) + r"\b"
-            score += 3 * len(re.findall(pat, head))
-            score += len(re.findall(pat, body))
+            body_hits = len(re.findall(pat, body))
+            head_hits = len(re.findall(pat, head))
+            # Primary weight on spoken words; metadata provides bounded supporting boost
+            score += body_hits * 3 + min(head_hits * 2, 4)
         if score > best_score:
             best, best_score = niche, score
     return best

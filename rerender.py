@@ -143,7 +143,15 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
     mus_track = studio_plan.get("music_track")
     mus_vol = float(studio_plan.get("music_volume_db", -18.0))
     sp_enhance = bool(studio_plan.get("speech_enhance", True))
-    if aspect == "16:9":
+    framing_mode = studio_plan.get("framing_mode", "smart_director")
+
+    if aspect == "9:16" and framing_mode in ("split_tb", "split_lr", "wide"):
+        import director
+        seg = director.DirectorSegment(0.0, out_end - out_start, layout=framing_mode)
+        metrics = director.render_director_clip(info["video_path"], out_start, out_end,
+                                                [seg], clip_dir / "reframed.mp4", cfg)
+        src = clip_dir / "reframed.mp4"
+    elif aspect == "16:9":
         cut_path = (cut_mod.cut_segments(info["video_path"], segments, clip_dir / "cut.mp4",
                                          cfg, speed_ramps=speed_ramps)
                     if multi else

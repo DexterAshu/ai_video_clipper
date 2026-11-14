@@ -50,10 +50,13 @@ function navigate() {
   // auto-default to 'default' workspace so user directly lands on home
   if (!localStorage.getItem(WORKSPACE_KEY)) {
     const legacy = localStorage.getItem("clipforge_workspace");
-    if (legacy) { localStorage.setItem(WORKSPACE_KEY, legacy); localStorage.setItem(WORKSPACE_NAME_KEY, localStorage.getItem("clipforge_workspace_name") || "Default"); }
-  }
-    localStorage.setItem(WORKSPACE_KEY, "default");
-    localStorage.setItem(WORKSPACE_NAME_KEY, "Default");
+    if (legacy) {
+      localStorage.setItem(WORKSPACE_KEY, legacy);
+      localStorage.setItem(WORKSPACE_NAME_KEY, localStorage.getItem("clipforge_workspace_name") || "Default");
+    } else {
+      localStorage.setItem(WORKSPACE_KEY, "default");
+      localStorage.setItem(WORKSPACE_NAME_KEY, "Default");
+    }
   }
   if (cleanup) { cleanup(); cleanup = null; }
   document.querySelectorAll(".topbar nav a").forEach((a) => {
@@ -924,6 +927,24 @@ async function renderResults(jobName) {
   grid.replaceChildren(...clips.map((clip) => clipCard(jobName, clip, dots)));
 }
 
+function formatEngagementLabel(reason) {
+  if (!reason) return "";
+  const text = String(reason).trim();
+  if (text.startsWith("rule-based:")) {
+    const kw = text.match(/(\d+)\s*hook keywords/);
+    if (kw && parseInt(kw[1], 10) > 0) return `${kw[1]} hook kw`;
+    const m = text.match(/([\d\.]+)\s*words\/sec/);
+    if (m) return `${m[1]} w/s`;
+    return "Heuristic";
+  }
+  if (text.startsWith("event-cluster:")) {
+    const p = text.match(/peak\s+([a-zA-Z]+)(?:\s+(\d+)\/10)?/);
+    if (p) return p[2] ? `${p[1]} ${p[2]}/10` : p[1];
+    return "Event Cluster";
+  }
+  return text.length > 22 ? `${text.slice(0, 20)}…` : text;
+}
+
 function clipCard(jobName, clip, dots) {
   const nn = String(clip.index).padStart(2, "0");
   const fileUrl = (name) =>
@@ -943,7 +964,13 @@ function clipCard(jobName, clip, dots) {
     dots.push(miniScore(mini, score));
   }
   if (clip.niche) scoreRow.append(el("span", { class: "badge" }, clip.niche));
-  if (clip.reason) scoreRow.append(el("span", { class: "badge badge-ok", title: "Engagement signal" }, clip.reason));
+  if (clip.reason) {
+    const cleanLabel = formatEngagementLabel(clip.reason);
+    scoreRow.append(el("span", {
+      class: "badge badge-ok",
+      title: `Engagement signal: ${clip.reason}`,
+    }, cleanLabel));
+  }
 
   const meta = clip.metadata || {};
   const metaBox = el("div", { class: "clip-meta-box" });
@@ -1143,7 +1170,19 @@ async function renderEditor(jobName, indexStr) {
     }
   };
 
-  // 2. Manual Framing Controls
+  // 2. Video Framing & AI Director Controls
+  const FRAMING_MODES = [
+    { id: "smart_director", label: "Smart AI Director (Auto Multi-Layout)" },
+    { id: "full", label: "Full-Screen Single Speaker" },
+    { id: "split_tb", label: "Top-Bottom Split Screen" },
+    { id: "split_lr", label: "Left-Right Split Screen" },
+    { id: "wide", label: "Wide / Context Mode (Blurred BG)" },
+    { id: "manual", label: "Manual Offsets Only" }
+  ];
+  const framingModeSel = el("select", { class: "select" },
+    ...FRAMING_MODES.map((m) => el("option", m.id === (edData?.framing_mode || "smart_director") ? { value: m.id, selected: "" } : { value: m.id }, m.label))
+  );
+
   const panXIn = el("input", { type: "range", min: "-100", max: "100", step: "5", value: String(edData?.crop_x_offset || 0), class: "input" });
   const panXVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${panXIn.value}px`);
   panXIn.oninput = () => { panXVal.textContent = `${panXIn.value}px`; };
@@ -1158,6 +1197,7 @@ async function renderEditor(jobName, indexStr) {
 
   const resetFramingBtn = el("button", { class: "btn btn-sm btn-ghost", type: "button" }, "Reset Framing");
   resetFramingBtn.onclick = () => {
+    framingModeSel.value = "smart_director";
     panXIn.value = "0"; panXVal.textContent = "0px";
     tiltYIn.value = "0"; tiltYVal.textContent = "0px";
     zoomIn.value = "1.0"; zoomVal.textContent = "1.00x";
@@ -1175,7 +1215,8 @@ async function renderEditor(jobName, indexStr) {
     { id: "cinematic", label: "Cinematic (Warm Gold)" },
     { id: "dynamic-social", label: "Dynamic Social (Neon Green)" },
     { id: "karaoke-pop", label: "Karaoke Pop (Legacy)" },
-    { id: "bold-impact", label: "Bold Impact (Legacy)" }
+    { id: "bold-impact", label: "Bold Impact (Legacy)" },
+    { id: "none", label: "No captions (Clean Video)" }
   ];
   const presetSel = el("select", { class: "select" },
     ...PRESET_OPTIONS.map((p) => el("option", p.id === state.preset ? { value: p.id, selected: "" } : { value: p.id }, p.label)));
@@ -1243,6 +1284,7 @@ async function renderEditor(jobName, indexStr) {
         crop_x_offset: Number(panXIn.value),
         crop_y_offset: Number(tiltYIn.value),
         zoom: Number(zoomIn.value),
+        framing_mode: framingModeSel.value,
         music_enabled: musicToggle.input.checked,
         music_volume_db: Number(musicVolIn.value),
         speech_enhance: speechEnhanceToggle.input.checked,
@@ -1284,6 +1326,7 @@ async function renderEditor(jobName, indexStr) {
           crop_x_offset: Number(panXIn.value),
           crop_y_offset: Number(tiltYIn.value),
           zoom: Number(zoomIn.value),
+          framing_mode: framingModeSel.value,
           music_enabled: musicToggle.input.checked,
           music_volume_db: Number(musicVolIn.value),
           speech_enhance: speechEnhanceToggle.input.checked,
@@ -1360,11 +1403,12 @@ async function renderEditor(jobName, indexStr) {
             trimEndMinus, trimEndPlus,
             resetTimelineBtn)),
 
-        // Section 2: Manual Framing
+        // Section 2: Framing & AI Director
         el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
           el("div", { style: "display:flex;justify-content:space-between;align-items:center;" },
-            el("h3", { class: "t-title", style: "margin:0;" }, "2. Framing & Composition"),
+            el("h3", { class: "t-title", style: "margin:0;" }, "2. Framing & AI Director"),
             resetFramingBtn),
+          field("Framing Mode", framingModeSel),
           field("Horizontal Pan (px)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, panXIn, panXVal)),
           field("Vertical Tilt (px)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, tiltYIn, tiltYVal)),
           field("Manual Zoom Factor", el("div", { style: "display:flex;align-items:center;gap:10px;" }, zoomIn, zoomVal))),

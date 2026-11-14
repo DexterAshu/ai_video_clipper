@@ -349,6 +349,11 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
                         log.error("clip %02d failed: %s — continuing", i, e)
                         notes.append(f"clip {i:02d} failed: {e}")
             clips.sort(key=lambda c: c["index"])
+            try:
+                import metadata as metadata_mod
+                clips = metadata_mod.deduplicate_job_metadata(clips)
+            except Exception as e:
+                log.debug("could not deduplicate job metadata: %s", e)
         tracker.finish("render")
         if not clips:
             raise ClipForgeError("no clips rendered successfully")
@@ -570,6 +575,7 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
     # content duration (drives virality/rescore)
     duration = edit_plan["output_duration"] if edit_plan else round(out_end - out_start, 3)
     clip_text = " ".join(w["word"] for w in words)
+    src_title_ctx = info.get("source_name", "") or Path(info.get("video_path", "")).stem
     if cfg.get("metadata", {}).get("enabled") is False:
         meta = {
             "title": f"Clip {i + 1}",
@@ -577,7 +583,8 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
             "hashtags": ["#shorts", "#reels", "#viral", "#video"]
         }
     else:
-        meta = metadata_mod.generate_metadata(clip_text, cand["hook"], cfg, provider)
+        meta = metadata_mod.generate_metadata(clip_text, cand["hook"], cfg, provider,
+                                              source_title=src_title_ctx)
     if music_attr:  # license requires attribution in the description
         meta = {**meta, "description": f"{meta['description']} {music_attr}"}
     credit = str(cfg.get("metadata", {}).get("credit_text", "")).strip()

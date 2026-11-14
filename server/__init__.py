@@ -59,7 +59,9 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def _workspace_scope(request, call_next):
         import config
-        ws = request.headers.get("x-workspace") or "default"
+        ws = (request.headers.get("x-workspace")
+              or request.query_params.get("ws")
+              or "default")
         token = config.current_workspace.set(ws)
         try:
             return await call_next(request)

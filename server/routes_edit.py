@@ -217,6 +217,7 @@ class EditorSaveRequest(BaseModel):
     crop_x_offset: float = 0.0
     crop_y_offset: float = 0.0
     zoom: float = 1.0
+    framing_mode: str = "smart_director"
     music_enabled: bool = False
     music_track: str | None = None
     music_volume_db: float = -18.0
@@ -287,6 +288,7 @@ def get_clip_editor(job_name: str, index: int):
         "crop_x_offset": saved_plan.get("crop_x_offset", 0.0),
         "crop_y_offset": saved_plan.get("crop_y_offset", 0.0),
         "zoom": saved_plan.get("zoom", 1.0),
+        "framing_mode": saved_plan.get("framing_mode", "smart_director"),
         "music_enabled": saved_plan.get("music_enabled", False),
         "music_track": saved_plan.get("music_track", ""),
         "music_volume_db": saved_plan.get("music_volume_db", -18.0),

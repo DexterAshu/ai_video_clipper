@@ -127,11 +127,31 @@ def _mouth_openness(landmarks, h: int) -> float:
     return abs(bottom.y - top.y) * h / max(fh, 1e-6)
 
 
+def apply_tripod_deadband(targets: list[float], deadband_px: float,
+                          min_val: float, max_val: float) -> list[float]:
+    """Tripod-first spatial deadband: holds camera completely static while
+    the subject remains inside the safe zone [-deadband_px, +deadband_px].
+    Smoothly repositions only when the subject meaningfully exits the safe zone."""
+    if not targets:
+        return []
+    anchor = float(targets[0])
+    out = [anchor]
+    for raw in targets[1:]:
+        delta = raw - anchor
+        if abs(delta) > deadband_px:
+            shift = delta - math.copysign(deadband_px, delta)
+            anchor += 0.28 * shift
+        anchor = max(min_val, min(max_val, anchor))
+        out.append(anchor)
+    return out
+
+
 class SubjectTracker:
     """Persistent subject tracker across frames: tracks multiple faces,
-    maintains spatial track identity, scores active speakers, applies
-    hysteresis to prevent erratic switching, provides deadband anti-jitter,
-    sampling-aware face disappearance recovery, and multi-person 2-shot framing."""
+    maintains spatial track identity, scores active speakers with area
+    normalization and laughter filtering, applies hysteresis to prevent
+    erratic switching, provides deadband anti-jitter, sampling-aware face
+    disappearance recovery, and multi-person 2-shot framing."""
 
     def __init__(self, w: int, h: int, deadband_px: float = 4.0, fps: float = 12.0):
         self.w = w
@@ -140,6 +160,7 @@ class SubjectTracker:
         self.fps = max(1.0, float(fps))
         self.grace_frames = max(3, int(round(1.6 * self.fps)))
         self.stale_frames = max(5, int(round(2.0 * self.fps)))
+        self.dwell_threshold = max(3, int(round(0.5 * self.fps)))
         self.tracks: dict[int, dict] = {}
         self.next_id = 0
         self.active_id: int | None = None
@@ -204,15 +225,18 @@ class SubjectTracker:
             return None
 
         # Multi-person 2-shot conversation framing:
-        # If 2 or more faces are detected, check if their span fits inside 9:16 crop width
+        # If 2 or more faces are detected, check if their span fits comfortably inside 9:16 crop width
+        primary_face, secondary_face = {}, {}
         if len(faces_data) >= 2:
             crop_w_est = int(self.h * 9 / 16)
             sorted_faces = sorted(faces_data, key=lambda f: f[2] * f[3], reverse=True)[:2]
             f1, f2 = sorted_faces[0], sorted_faces[1]
+            primary_face = {"cx": f1[0], "cy": f1[1], "fw": f1[2], "fh": f1[3]}
+            secondary_face = {"cx": f2[0], "cy": f2[1], "fw": f2[2], "fh": f2[3]}
             min_x = min(f1[0] - f1[2] / 2.0, f2[0] - f2[2] / 2.0)
             max_x = max(f1[0] + f1[2] / 2.0, f2[0] + f2[2] / 2.0)
             span_x = max_x - min_x
-            if span_x <= 0.75 * crop_w_est:
+            if span_x <= 0.85 * crop_w_est:
                 raw_cx = (min_x + max_x) / 2.0
                 raw_cy = min(f1[1], f2[1])
                 if hasattr(self, "_last_multi_cx") and abs(raw_cx - self._last_multi_cx) < self.deadband_px:
@@ -227,27 +251,45 @@ class SubjectTracker:
                     "h": max(f1[3], f2[3]),
                     "multi_person": True,
                     "num_faces": len(faces_data),
+                    "primary_face": primary_face,
+                    "secondary_face": secondary_face,
                     "first_frame": frame_idx,
                     "last_frame": frame_idx
                 }
 
-        # score tracks based on size + mouth variance
+        # score tracks based on normalized area + syllabic mouth dynamics (filtering laughter/smiling)
         scored = []
         for tid, t in self.tracks.items():
             hist = self.mouth_hist[tid]
+            has_history = len(hist) >= 4
+            mean_open = float(np.mean(hist)) if hist else 0.0
             var = float(np.var(hist)) if len(hist) >= 3 else 0.0
-            score = (t["w"] * t["h"]) * (1.0 + 3.0 * min(var * 100.0, 2.0))
+            latest = hist[-1] if hist else 0.0
+
+            # Syllabic speech has rhythmic variation between consonants and vowels.
+            # Static wide-open laughing/smiling listeners (sustained high mean with near-zero var across 4+ frames) are penalized.
+            if has_history and mean_open > 0.45 and var < 0.003:
+                speech_boost = 0.6  # sustained laughing/smiling listener discount
+            elif has_history:
+                speech_boost = 1.0 + 4.5 * min(var * 100.0, 2.0)
+            else:
+                # Initial frames before history accumulates: use instantaneous mouth openness
+                speech_boost = 1.0 + 3.0 * min(latest * 2.0, 2.0)
+
+            # Area normalization: use square-root of area so proximity doesn't drown active background speakers
+            norm_dim = math.sqrt(max(10.0, t["w"] * t["h"]))
+            score = norm_dim * speech_boost
             scored.append((tid, score, t))
 
         scored.sort(key=lambda x: x[1], reverse=True)
         top_tid, top_score, top_t = scored[0]
 
-        # hysteresis / stickiness: don't flap on minor noise
+        # hysteresis / stickiness: responsive switching without erratic jitter
         if self.active_id in self.tracks:
             curr_score = next((s for tid, s, _ in scored if tid == self.active_id), 0.0)
-            if top_tid != self.active_id and top_score > curr_score * 1.6:
+            if top_tid != self.active_id and top_score > curr_score * 1.35:
                 self.active_dwell += 1
-                if self.active_dwell > 7:  # hold for ~0.6s at 12fps before switching
+                if self.active_dwell > self.dwell_threshold:  # time-scaled hold (~0.5s)
                     self.active_id = top_tid
                     self.active_dwell = 0
             else:
@@ -258,6 +300,10 @@ class SubjectTracker:
 
         res = dict(self.tracks[self.active_id])
         res["multi_person"] = False
+        res["num_faces"] = len(faces_data)
+        if primary_face:
+            res["primary_face"] = primary_face
+            res["secondary_face"] = secondary_face
         return res
 
 
@@ -515,6 +561,14 @@ def reframe_clip(source: str | Path, start: float, end: float,
     if not target_xs:
         target_xs = [w / 2.0]
         target_ys = [0.0]
+
+    # Tripod-First Deadband: hold camera completely static while subject remains
+    # inside the composition safe corridor (horizontal: ~20% of crop_w, vertical: ~10% of crop_h).
+    # Eliminates handheld camera floating motion while preserving smooth dynamic pans when needed.
+    deadband_x = max(24.0, cw * 0.20)
+    deadband_y = max(16.0, ch * 0.10)
+    target_xs = apply_tripod_deadband(target_xs, deadband_x, half_w, w - half_w)
+    target_ys = apply_tripod_deadband(target_ys, deadband_y, 0.0, h - ch)
 
     # Interpolate sampled proxy targets onto every output frame
     sample_times = np.arange(len(target_xs)) / proxy_fps

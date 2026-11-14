@@ -58,7 +58,7 @@ export async function pickPreset(current, font) {
     current: current || p.default,
     options: p.presets.map((name) => ({
       value: name,
-      label: name.replace(/-/g, " "),
+      label: name === "none" ? "No captions (Clean Video)" : name.replace(/-/g, " "),
       img: `/api/preview?preset=${encodeURIComponent(name)}${q}`,
     })),
   });

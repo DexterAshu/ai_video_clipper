@@ -62,6 +62,15 @@ def preview_png(preset_name: str, font_family: str | None = None,
     Raises KeyError for an unknown preset and CaptionError on a burn failure
     (propagated from write_ass / ffmpeg)."""
     cfg = cfg or load_config()
+    if preset_name == "none":
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        out = CACHE_DIR / "preset_none.png"
+        if not out.exists():
+            run_ffmpeg(["-f", "lavfi", "-i", f"color=c=0x141416:s={_OUT_W}x120:d=1",
+                        "-vf", f"drawtext=text='No Captions (Clean Video)':fontcolor=white@0.7:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2",
+                        "-vframes", "1", "-y", out])
+        return out
+
     if preset_name not in cfg["captions"]["presets"]:
         raise KeyError(f"unknown caption preset '{preset_name}'")
 

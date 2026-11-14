@@ -47,24 +47,48 @@ put putting turn turned start started stop stopped let lets bit chunk chunks
 """.split())
 
 PROMPT = """TASK: Write YouTube Shorts metadata for a short vertical video clip.
-Ground everything in the transcript — use the real names, topics, and the
-actual point made. No clickbait, no invented facts.
+Ground everything STRICTLY in the provided transcript — use the real names, topics, and the
+actual punchline or statement made. No clickbait, no invented facts, no generic placeholder copies.
 CONSTRAINTS:
-- title: under 60 characters, the hook first, no quotes, no emojis
+- title: under 60 characters, the hook first, no quotes, no emojis, grounded strictly in the speech
 - description: exactly 2 sentences and NO hashtags in the text.
-  Sentence 1 is a hook that EXPANDS the title (adds the stakes or intrigue)
-  without repeating the title's words. Sentence 2 gives one concrete detail
-  from the clip so a viewer knows what they will actually watch.
+  Sentence 1 is a hook that EXPANDS the title (adds stakes or intrigue from this clip).
+  Sentence 2 gives one concrete detail from this clip so a viewer knows what they will watch.
 - hashtags: 8 to 12 topic tags only — nouns, names, and themes from the clip
   (never filler like done/yeah/cool/right). Each is #word, letters/digits.
+- CRITICAL RULES:
+  * Do NOT invent accusations, fraud, scam claims (e.g. 'Scam Exposed'), or unverified charges.
+  * Do NOT output generic startup/founder tropes unless the speaker is literally discussing a startup.
+  * Base the title and description 100% on the transcript provided below.
 OUTPUT SCHEMA (respond with ONLY this JSON):
 {schema}
-EXAMPLE OUTPUT:
-{{"title": "The one habit that saved my startup", "description": "Most founders quit the week before it finally clicks. A two-time founder breaks down the daily reset that kept his team shipping when everything was on fire.", "hashtags": ["#startup", "#founder", "#productivity", "#discipline", "#buildinpublic", "#entrepreneur", "#business", "#shorts"]}}
-CLIP HOOK: {hook}
+FORMAT STRUCTURE (do NOT copy this placeholder text, extract from the transcript below):
+{{"title": "Spoken Hook Under Sixty Characters", "description": "Engaging sentence introducing the moment from the speech. Second sentence highlighting the concrete outcome or punchline.", "hashtags": ["#topic1", "#topic2", "#topic3", "#topic4", "#topic5", "#topic6", "#topic7", "#shorts"]}}
+{source_context}CLIP HOOK: {hook}
 CLIP TRANSCRIPT:
 {text}
 """
+
+PROMPT_LEAK_PHRASES = (
+    "saved my startup",
+    "two-time founder",
+    "kept his team shipping",
+    "when everything was on fire",
+    "spoken hook under sixty",
+    "two-time contestant breaks down the daily reset",
+    "most founders quit the week before",
+    "most contestants quit the week before"
+)
+
+
+def detect_prompt_leak(meta: dict) -> bool:
+    """Return True if generated metadata echoes known few-shot prompt templates."""
+    title = str(meta.get("title", "")).lower()
+    desc = str(meta.get("description", "")).lower()
+    for phrase in PROMPT_LEAK_PHRASES:
+        if phrase in title or phrase in desc:
+            return True
+    return False
 
 
 def clean_tag(raw: str) -> str | None:
@@ -120,19 +144,26 @@ def topic_hashtags(text: str, seed_tags: list | None = None,
 
 
 def generate_metadata(clip_text: str, hook: str, cfg: dict | None = None,
-                      provider: str | None = None) -> dict:
+                      provider: str | None = None,
+                      source_title: str | None = None) -> dict:
     """Returns ClipMetadata (schema-validated) — LLM first, template fallback.
     Hashtags are always re-cleaned through topic_hashtags so junk can't ride
     through from the model, and any stray hashtags are stripped from the
     description prose."""
     cfg = cfg or load_config()
+    ctx_str = f"SOURCE VIDEO / SHOW CONTEXT: {source_title}\n" if source_title else ""
     prompt = PROMPT.format(schema=json.dumps(SCHEMAS["clip_metadata"]),
-                           hook=hook[:200], text=clip_text[:2000])
+                           hook=hook[:200], text=clip_text[:2000],
+                           source_context=ctx_str)
     try:
         data = llm.complete_json("clip_metadata", "clip_metadata", prompt,
                                  provider=provider,
                                  context={"text": clip_text, "hook": hook},
                                  cfg=cfg)
+        if detect_prompt_leak(data):
+            log.warning("metadata LLM echoed prompt template (%s) — falling back to grounded template",
+                        data.get("title"))
+            data = template_metadata(hook, clip_text)
     except LLMError as e:
         log.warning("metadata LLM failed (%s) — template fallback", e)
         data = template_metadata(hook, clip_text)
@@ -143,6 +174,29 @@ def generate_metadata(clip_text: str, hook: str, cfg: dict | None = None,
     data["hashtags"] = topic_hashtags(clip_text, seed_tags=data.get("hashtags"))
     validate(data, "clip_metadata")
     return data
+
+
+def deduplicate_job_metadata(clips: list[dict]) -> list[dict]:
+    """Ensure no two clips within the same job share the exact same title.
+    If duplicates occur, append distinctive hook details to differentiate them."""
+    seen_titles: dict[str, int] = {}
+    for i, clip in enumerate(clips):
+        meta = clip.get("metadata")
+        if not meta or not isinstance(meta, dict):
+            continue
+        title = meta.get("title", f"Clip {i + 1}").strip()
+        if title in seen_titles:
+            seen_titles[title] += 1
+            count = seen_titles[title]
+            hook = clip.get("hook", "").strip()
+            if hook and hook.lower() not in title.lower():
+                distinct_title = _trim_title(f"{title}: {hook}")
+            else:
+                distinct_title = _trim_title(f"{title} (Part {count})")
+            meta["title"] = distinct_title
+        else:
+            seen_titles[title] = 1
+    return clips
 
 
 def template_metadata(hook: str, text: str) -> dict:
