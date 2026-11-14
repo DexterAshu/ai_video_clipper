@@ -1,8 +1,8 @@
-"""ClipForge bootstrap / self-installer.
+"""Frameza bootstrap / self-installer.
 
 Runs with ANY system Python 3.8+ using ONLY the standard library (it executes
 before pip dependencies exist). It makes a fresh Windows/Linux/macOS machine
-ready to run ClipForge with zero manual setup:
+ready to run Frameza with zero manual setup:
 
   1.  Find (or guide installation of) Python 3.11.
   2.  Create/repair the .venv and install pinned requirements (with retries).
@@ -112,7 +112,7 @@ def download(url: str, dest: Path, expected_sha256: str = "",
 def _fetch(url: str, part: Path, label: str) -> None:
     """One (resuming) download pass with progress + speed output."""
     have = part.stat().st_size if part.exists() else 0
-    req = urllib.request.Request(url, headers={"User-Agent": "ClipForge-setup"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Frameza-setup"})
     if have:
         req.add_header("Range", f"bytes={have}-")
     with urllib.request.urlopen(req, timeout=60) as r:
@@ -407,7 +407,7 @@ def validate(ffmpeg_where: str) -> list[str]:
 # ------------------------------------------------------------------- main
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="ClipForge self-installer")
+    ap = argparse.ArgumentParser(description="Frameza self-installer")
     ap.add_argument("--prefetch-models", action="store_true",
                     help="download the Whisper model now (resumable)")
     ap.add_argument("--check-only", action="store_true",
@@ -426,7 +426,7 @@ def main(argv=None) -> int:
         print(json.dumps(report, indent=2) if a.json else report)
         return 0
 
-    log("── ClipForge setup ──────────────────────────────────")
+    log("── Frameza setup ──────────────────────────────────")
     py = ensure_python311()
     ensure_venv(py)
     ffmpeg_where = ensure_ffmpeg()

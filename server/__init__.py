@@ -1,4 +1,4 @@
-"""FastAPI backend for the ClipForge UI.
+"""FastAPI backend for the Frameza UI.
 
 Thin API layer only: every route calls existing pipeline/library modules;
 no clip logic lives here. Static frontend served from web/.
@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
         channels.start_background_poll()
         yield
 
-    app = FastAPI(title="ClipForge", lifespan=lifespan)
+    app = FastAPI(title="Frameza", lifespan=lifespan)
 
     # Local, self-updating app: never let the browser serve a stale UI after an
     # update (the auto-opened window otherwise keeps cached HTML/JS/CSS and the

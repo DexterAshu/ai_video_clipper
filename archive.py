@@ -253,7 +253,7 @@ def zip_status() -> dict:
 
 def create_backup_zip(on_progress=None, delete_originals: bool = False) -> dict:
     """Zip every archived clip not already covered by a previous backup into
-    archive/backups/clipforge_backup_<date>_<n>of<n>.zip (n = how many backup
+    archive/backups/frameza_backup_<date>_<n>of<n>.zip (n = how many backup
     zips exist once this one is written). Streams each file straight from
     disk via ZipFile.write() (never holds a whole clip's bytes in memory);
     after closing, reopens and verifies member count + testzip() before the
@@ -276,7 +276,7 @@ def create_backup_zip(on_progress=None, delete_originals: bool = False) -> dict:
         backups_dir.mkdir(parents=True, exist_ok=True)
         n = len(manifest.get("zips", {})) + 1
         date = datetime.now().strftime("%Y-%m-%d")
-        name = f"clipforge_backup_{date}_{n}of{n}.zip"
+        name = f"frameza_backup_{date}_{n}of{n}.zip"
         path = backups_dir / name
 
         items = sorted(to_zip.items())

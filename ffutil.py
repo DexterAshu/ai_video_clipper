@@ -41,7 +41,8 @@ def ffmpeg_bin() -> str:
     This is the single knob for pointing at a driver-compatible build when the
     system ffmpeg's NVENC SDK is newer than the installed NVIDIA driver."""
     if "ffmpeg" not in _bin_cache:
-        _bin_cache["ffmpeg"] = (os.environ.get("CLIPFORGE_FFMPEG")
+        _bin_cache["ffmpeg"] = (os.environ.get("FRAMEZA_FFMPEG")
+                                or os.environ.get("CLIPFORGE_FFMPEG")
                                 or _config_binary("binary") or "ffmpeg")
     return _bin_cache["ffmpeg"]
 
@@ -50,7 +51,9 @@ def ffprobe_bin() -> str:
     """ffprobe alongside ffmpeg_bin(): CLIPFORGE_FFPROBE env → config
     `ffmpeg.ffprobe_binary` → the sibling of ffmpeg_bin() → `"ffprobe"`."""
     if "ffprobe" not in _bin_cache:
-        env = os.environ.get("CLIPFORGE_FFPROBE") or _config_binary("ffprobe_binary")
+        env = (os.environ.get("FRAMEZA_FFPROBE")
+               or os.environ.get("CLIPFORGE_FFPROBE")
+               or _config_binary("ffprobe_binary"))
         if not env:
             fm = ffmpeg_bin()
             sib = Path(fm).with_name(Path(fm).name.replace("ffmpeg", "ffprobe"))

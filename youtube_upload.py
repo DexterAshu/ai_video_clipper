@@ -41,7 +41,7 @@ SETUP_INSTRUCTIONS = """### YouTube upload — one-time setup (manual)
    → application type **Desktop app** → download the JSON file.
 4. Save it somewhere private and set in `.env`:
    `YOUTUBE_CLIENT_SECRETS=C:\\path\\to\\client_secret.json`
-5. Restart ClipForge and click **Authorize YouTube** — a browser window will
+5. Restart Frameza and click **Authorize YouTube** — a browser window will
    open ONCE to grant access; the token is cached locally after that.
 Uploads default to **private** — flip them public in YouTube Studio."""
 
@@ -55,7 +55,7 @@ _DRY_SERVICE = object()   # handed to callers in dry-run; never used for a call
 
 
 def dry_run() -> bool:
-    return os.environ.get("CLIPFORGE_DRY_RUN", "").strip().lower() \
+    return os.environ.get("FRAMEZA_DRY_RUN", os.environ.get("CLIPFORGE_DRY_RUN", "")).strip().lower() \
         not in ("", "0", "false", "no", "off")
 
 

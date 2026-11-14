@@ -218,7 +218,7 @@ def verify_no_leftover_subs(final_path: str | Path, exclude_top_pct: float,
     """Hard invariant for a REPLACE/KEEP clip: scan the FINAL rendered video
     for a text-like band (same detector as detect_subtitles, uncached — the
     final render is unique per clip so there's nothing to cache). If a band
-    is found that does not substantially overlap the region ClipForge's own
+    is found that does not substantially overlap the region Frameza's own
     caption/CTA occupies (`exclude_top_pct`..`exclude_bottom_pct`), that band
     is an unexplained leftover (e.g. a source subtitle the crop/keep decision
     failed to remove or defer to) — return its SUBTITLE_DETECT_RESULT so the

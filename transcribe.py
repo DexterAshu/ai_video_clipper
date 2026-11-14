@@ -154,7 +154,7 @@ def _transcribe_spans(model, audio_path: Path, spans: list[tuple], cfg: dict,
     language = ""
     total = max(1e-6, sum(e - s for s, e in spans))
     done = 0.0
-    with tempfile.TemporaryDirectory(prefix="clipforge_spans_") as td:
+    with tempfile.TemporaryDirectory(prefix="frameza_spans_") as td:
         for i, (s, e) in enumerate(spans):
             clip = Path(td) / f"span_{i:03d}.wav"
             run_ffmpeg(["-ss", f"{s:.3f}", "-i", audio_path,

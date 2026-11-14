@@ -1,4 +1,4 @@
-# GPU-DIAGNOSTIC.md — ClipForge GPU evidence log
+# GPU-DIAGNOSTIC.md — Frameza GPU evidence log
 
 Machine: Windows 11, **NVIDIA GeForce GTX 1650 (4 GB), driver 581.08, CUDA 13.0**.
 Generated on branch `feature/gpu-fix` (2026-07-09).
@@ -85,14 +85,14 @@ GPU transcribe: WORKING
 
 ### Transcription on GPU (`pipeline.py --sample`)
 ```
-clipforge.transcribe whisper device=cuda compute=float16 model=large-v3
+frameza.transcribe whisper device=cuda compute=float16 model=large-v3
 ```
 During transcribe, `nvidia-smi` polling showed **GPU compute util 100%,
 mem ~3.4 GB** (whisper large-v3 on CUDA; encoder util 0%, as expected — whisper
 uses CUDA compute, not NVENC).
 
 ### NVENC render on GPU — encoder-utilization evidence
-Log: `clipforge.ffmpeg encoder: h264_nvenc (GPU)` on every render.
+Log: `frameza.ffmpeg encoder: h264_nvenc (GPU)` on every render.
 `nvidia-smi --query-gpu=utilization.gpu,utilization.encoder` sampled at 0.25 s
 during the render stage:
 ```

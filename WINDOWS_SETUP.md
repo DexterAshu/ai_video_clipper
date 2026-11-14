@@ -1,6 +1,6 @@
-# ClipForge Windows Setup Guide
+# Frameza Windows Setup Guide
 
-This guide details the complete procedure for configuring and running ClipForge on **Windows 11 64-bit** with local AI processing, NVIDIA GPU acceleration, and zero paid API dependencies.
+This guide details the complete procedure for configuring and running Frameza on **Windows 11 64-bit** with local AI processing, NVIDIA GPU acceleration, and zero paid API dependencies.
 
 ---
 
@@ -17,7 +17,7 @@ This guide details the complete procedure for configuring and running ClipForge 
 
 ## 2. Python Environment Setup
 
-ClipForge strictly enforces **Python 3.11** to ensure full binary wheel compatibility with MediaPipe and CTranslate2.
+Frameza strictly enforces **Python 3.11** to ensure full binary wheel compatibility with MediaPipe and CTranslate2.
 
 ### A. Python 3.11 Installation
 Python 3.11.9 is installed at:
@@ -44,7 +44,7 @@ Upgrade `pip` and install all repository packages:
 
 ## 3. Local FFmpeg Deployment (NVENC & Libass)
 
-ClipForge requires a static build of FFmpeg containing `libass` (for subtitle burning) and `ffnvcodec` (for NVENC hardware encoding).
+Frameza requires a static build of FFmpeg containing `libass` (for subtitle burning) and `ffnvcodec` (for NVENC hardware encoding).
 
 ### A. Binary Placement
 Deploy the static Windows build directly into the repository:
@@ -90,7 +90,7 @@ Verify GPU acceleration using the standalone diagnostic tool:
 ```
 Expected Output:
 ```
-ClipForge GPU check
+Frameza GPU check
 ========================================
 [1] NVIDIA driver: NVIDIA GeForce RTX 5050 Laptop GPU, 610.74
 [2] ffmpeg / NVENC: SUCCESS (h264_nvenc)
@@ -105,7 +105,7 @@ VERDICT
 
 ## 5. Local LLM Setup (Ollama)
 
-ClipForge uses Ollama for local, privacy-respecting, and free highlight scoring and metadata generation.
+Frameza uses Ollama for local, privacy-respecting, and free highlight scoring and metadata generation.
 
 ### A. Ollama Installation
 Ollama is installed at:
@@ -133,10 +133,10 @@ ollama list
 
 ## 6. Configuration Overrides (`config.local.yaml`)
 
-ClipForge preserves `config.yaml` by applying local machine overrides via `config.local.yaml`:
+Frameza preserves `config.yaml` by applying local machine overrides via `config.local.yaml`:
 
 ```yaml
-# Local ClipForge configuration overrides
+# Local Frameza configuration overrides
 ffmpeg:
   binary: tools/ffmpeg/bin/ffmpeg.exe
   ffprobe_binary: tools/ffmpeg/bin/ffprobe.exe

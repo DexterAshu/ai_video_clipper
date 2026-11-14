@@ -21,16 +21,16 @@ Out of scope permanently: any Content-ID-evasion framing or feature. If cross-po
 - Private/reverse-engineered TikTok upload clients exist (e.g. various `tiktok-uploader` style Python packages using session cookies or the app's internal API). Ban-risk data specific to TikTok is thinner than Instagram's, but TikTok has aggressively fingerprinted and rate-limited unofficial clients in recent years; expect similar risk category to Instagram's unofficial tools (double-digit-percent annual suspension risk for automation-pattern accounts) rather than the sub-1% official-API rate.
 - Given it's a real creator account (not a throwaway), this is not worth the risk for a few Shorts a day.
 
-**Recommendation: build later, manual-stage now.** The audit gate makes "build now" pointless until upload volume justifies weeks of review latency. ClipForge should generate the TikTok-flavored caption/hashtag text and put the rendered file in a "ready to post" folder/panel for one-tap manual TikTok upload today; revisit the Direct Post API once volume is consistent enough to justify submitting for audit.
+**Recommendation: build later, manual-stage now.** The audit gate makes "build now" pointless until upload volume justifies weeks of review latency. Frameza should generate the TikTok-flavored caption/hashtag text and put the rendered file in a "ready to post" folder/panel for one-tap manual TikTok upload today; revisit the Direct Post API once volume is consistent enough to justify submitting for audit.
 
 ## Instagram (Reels)
 
 **Official API — Graph API, `instagram_business_content_publish` permission.**
 - Account: **Instagram Business account required** (linked to a Facebook Page). Creator accounts are explicitly NOT supported for API publishing — this is a hard account-type requirement, not a config toggle. If the owner's current account is a Creator account, it needs conversion to Business first (free, but changes some IG-native features like certain creator tools/insights framing).
 - App review: each permission (`instagram_business_basic`, `instagram_business_content_publish`) needs its own Meta App Review submission with a screencast demoing the full flow. Expect 2–4 weeks per round, and rejections send you back to the queue.
-- What's allowed: publish a Reel (create a media container, then publish it) — 9:16, 5–90 seconds, H.264/HEVC. **Note the ceiling:** Instagram's native app now allows Reels up to 3 minutes, but the Graph API is still capped at 90 seconds — if ClipForge ever produces longer-form Shorts, the API can't post them regardless of review status.
-- Scheduling: the API supports creating+publishing in one call; true "publish at a future time" scheduling is more limited than YoutubeAPI's `publishAt` — most tools fake scheduling by holding the file and firing the publish call at the right time (client-side timer), same as ClipForge would do for YouTube's non-scheduled path if publishAt weren't available. First-comment posting is possible via a separate comment-create call after publish.
-- Rate limit: ~100 API-published posts per rolling 24h — a total non-issue at ClipForge's volume.
+- What's allowed: publish a Reel (create a media container, then publish it) — 9:16, 5–90 seconds, H.264/HEVC. **Note the ceiling:** Instagram's native app now allows Reels up to 3 minutes, but the Graph API is still capped at 90 seconds — if Frameza ever produces longer-form Shorts, the API can't post them regardless of review status.
+- Scheduling: the API supports creating+publishing in one call; true "publish at a future time" scheduling is more limited than YoutubeAPI's `publishAt` — most tools fake scheduling by holding the file and firing the publish call at the right time (client-side timer), same as Frameza would do for YouTube's non-scheduled path if publishAt weren't available. First-comment posting is possible via a separate comment-create call after publish.
+- Rate limit: ~100 API-published posts per rolling 24h — a total non-issue at Frameza's volume.
 - Cost: free (Meta developer account + app).
 
 **Semi-official (Buffer/Later-class).**
@@ -40,7 +40,7 @@ Out of scope permanently: any Content-ID-evasion framing or feature. If cross-po
 - Real, well-documented, actively maintained (e.g. `instagrapi`). But ban-risk data is stark: official-API-based automation tools see well under 1% annual suspension; unofficial/session-based automation tools land in the 15-30%/year range — roughly an order of magnitude+ riskier. Meta has been tightening device-fingerprinting and challenge triggers through 2025-2026 specifically against this pattern.
 - For a personal/creator's real account, this is a bad trade for a few automated Reel posts a day. Do not build this.
 
-**Recommendation: build now, but as a smaller lift than TikTok's.** No blocking audit — just the standard 2-4 week Meta App Review, and it's a one-time cost. Real ceiling to flag: the 90s Reels cap means some ClipForge output (if clip length ever exceeds 90s) can't go through this API at all. Converting the account to Business is a prerequisite the owner needs to do manually before any of this can start.
+**Recommendation: build now, but as a smaller lift than TikTok's.** No blocking audit — just the standard 2-4 week Meta App Review, and it's a one-time cost. Real ceiling to flag: the 90s Reels cap means some Frameza output (if clip length ever exceeds 90s) can't go through this API at all. Converting the account to Business is a prerequisite the owner needs to do manually before any of this can start.
 
 ## Pinterest
 
@@ -61,7 +61,7 @@ Out of scope permanently: any Content-ID-evasion framing or feature. If cross-po
 
 ## Phased plan
 
-1. **Now:** Extend ClipForge's existing metadata generation (title/description/hashtags, already built for YouTube) to also emit Pinterest- and Instagram/TikTok-flavored variants (different hashtag conventions, Pinterest's title+description+board fields), and stage the rendered file + copy in a "ready to cross-post" panel for one-tap manual posting on all three platforms. This alone removes most of the manual toil regardless of what gets automated later.
+1. **Now:** Extend Frameza's existing metadata generation (title/description/hashtags, already built for YouTube) to also emit Pinterest- and Instagram/TikTok-flavored variants (different hashtag conventions, Pinterest's title+description+board fields), and stage the rendered file + copy in a "ready to cross-post" panel for one-tap manual posting on all three platforms. This alone removes most of the manual toil regardless of what gets automated later.
 2. **Next (build):** Pinterest API v5 integration — shortest review path, full automation reachable in weeks not months.
 3. **Then (build):** Instagram Graph API — requires the owner to convert to a Business account first, then a 2-4 week Meta App Review; automate once approved. Flag the 90s Reels cap as a real ceiling if clip lengths ever grow past it.
 4. **Later, only if volume justifies it:** TikTok Content Posting API — submit for audit once upload cadence is established (submitting early with low/no post history doesn't help and burns a review cycle); until then, keep using the manual-staging panel from step 1.

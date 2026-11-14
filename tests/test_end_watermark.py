@@ -47,7 +47,7 @@ def test_enabled_appends_end_card(tmp_path):
     src_dur = ffutil.probe(clip)["duration"]
 
     cfg = load_config()
-    cfg["upload"]["end_watermark"] = {"enabled": True, "text": "ClipForge",
+    cfg["upload"]["end_watermark"] = {"enabled": True, "text": "Frameza",
                                       "duration_s": 1.2}
     out, is_temp = sched.apply_end_watermark(clip, cfg)
     try:

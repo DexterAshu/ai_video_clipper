@@ -187,7 +187,7 @@ def batch_zip():
     if not dirs:
         raise HTTPException(404, "Nothing finished in the queue yet.")
     try:
-        return FileResponse(str(zip_jobs(dirs)), filename="clipforge-all.zip")
+        return FileResponse(str(zip_jobs(dirs)), filename="frameza-all.zip")
     except Exception as e:  # noqa: BLE001 — zip failure must be a sentence
         raise HTTPException(500, friendly(e, "Packaging the clips"))
 

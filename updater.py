@@ -175,7 +175,7 @@ def _download_resumable(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
     have = part.stat().st_size if part.exists() else 0
-    req = urllib.request.Request(url, headers={"User-Agent": "ClipForge-updater"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Frameza-updater"})
     if have:
         req.add_header("Range", f"bytes={have}-")
     with urllib.request.urlopen(req, timeout=60) as r:
@@ -217,7 +217,7 @@ def _stage_delta(files: list[dict], latest: str, staging: Path) -> list[dict]:
 def _stage_full(zip_url: str, latest: str, staging: Path) -> None:
     """Full zipball fallback: download (resumable), verify, extract."""
     zip_path = _download_resumable(zip_url,
-                                   UPDATES_DIR / f"clipforge-{latest}.zip")
+                                   UPDATES_DIR / f"frameza-{latest}.zip")
     with zipfile.ZipFile(zip_path) as z:
         if z.testzip() is not None:
             zip_path.unlink(missing_ok=True)
@@ -346,5 +346,5 @@ def apply_update() -> str:
     log.info("updated %s -> %s (%s)", cur, latest, kind)
     return (f"Updated to {latest} ({kind} update, settings/models/videos "
             f"preserved, backup kept in cache/updates/). "
-            f"Restart ClipForge to use the new version — the running app "
+            f"Restart Frameza to use the new version — the running app "
             f"keeps working until then.")

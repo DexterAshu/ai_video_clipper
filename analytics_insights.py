@@ -38,13 +38,13 @@ def join_rows(analytics_rows: list[tuple], upload_log: dict,
     row is `(video_id, views, estimated_minutes, avg_view_pct, likes,
     subs_gained)`, same shape as `upload_scheduler.report()`) against
     `upload_log["uploads"]` (keyed by clip path, each entry carrying
-    `video_id`/`title`/`publish_at`). Only videos ClipForge itself uploaded
+    `video_id`/`title`/`publish_at`). Only videos Frameza itself uploaded
     (i.e. present in `upload_log`) are returned — analytics rows for videos
-    uploaded outside ClipForge are silently dropped, since this tab is scoped
-    to ClipForge's own output. `analytics_rows` itself is capped by the
-    caller's `maxResults` (a channel with more ClipForge uploads than that
+    uploaded outside Frameza are silently dropped, since this tab is scoped
+    to Frameza's own output. `analytics_rows` itself is capped by the
+    caller's `maxResults` (a channel with more Frameza uploads than that
     cap will have its lowest-viewed clips missing from `analytics_rows`
-    entirely, so they're absent here too — not just "outside ClipForge").
+    entirely, so they're absent here too — not just "outside Frameza").
 
     `clip_extra_fn(key) -> dict`, if given, is called per matched clip to add
     `duration_s`/`source_name` (best-effort re-read of that clip's

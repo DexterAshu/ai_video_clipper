@@ -1,4 +1,4 @@
-# ClipForge v2 — build decisions log
+# Frameza v2 — build decisions log
 
 Mode 1 (autonomous build). Sensible defaults chosen where the spec was open;
 each choice logged here.

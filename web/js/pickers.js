@@ -220,7 +220,7 @@ export async function pickProfile(current) {
     current: current || "",
     options: [
       { value: "", label: "Standard",
-        desc: "ClipForge's built-in editing style" },
+        desc: "Frameza's built-in editing style" },
       ...p.profiles.filter((x) => x.name !== "default").map((x) => ({
         value: x.name,
         label: x.name,

@@ -1,4 +1,4 @@
-"""ClipForge YouTube upload CLI.
+"""Frameza YouTube upload CLI.
 
 Usage:
   python upload.py            upload the next eligible batch once, then exit

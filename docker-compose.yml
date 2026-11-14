@@ -1,7 +1,7 @@
 services:
-  clipforge:
+  frameza:
     build: .
-    image: clipforge:latest
+    image: frameza:latest
     ports:
       - "7860:7860"
     volumes:

@@ -1,4 +1,4 @@
-# ClipForge Phase R — Research (overnight run 2026-07-09)
+# Frameza Phase R — Research (overnight run 2026-07-09)
 
 Time-boxed (~45 min). Goal: ground the overnight feature set (esp. virality v2 and the new
 user options) in what leading clip tools ship and what published retention guidance says.

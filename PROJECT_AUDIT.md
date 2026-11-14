@@ -1,15 +1,15 @@
-# PROJECT AUDIT: ClipForge (AI-Video-Clipper)
+# PROJECT AUDIT: Frameza (AI-Video-Clipper)
 
 **Audit Date:** November 13, 2026  
 **Auditor:** Senior AI/ML & Video Processing Engineer  
-**Repository:** https://github.com/dexterAshu/clipforge  
+**Repository:** https://github.com/dexterAshu/frameza  
 **Target Environment:** Windows 11 Home 64-bit | Lenovo LOQ 15IRX10 | Intel Core i7-13650HX | NVIDIA GeForce RTX 5050 (8GB VRAM) | 16GB DDR5 RAM  
 
 ---
 
 ## 1. Executive Summary
 
-ClipForge is an open-source, self-hosted video repurposing application designed to convert long-form horizontal videos (local files or YouTube URLs) into vertical 9:16 short clips (for YouTube Shorts, Instagram Reels, and TikTok). It incorporates speech transcription, scene detection, AI-driven highlight detection, intelligent face tracking reframing, animated karaoke subtitles, social metadata generation, and background music integration.
+Frameza is an open-source, self-hosted video repurposing application designed to convert long-form horizontal videos (local files or YouTube URLs) into vertical 9:16 short clips (for YouTube Shorts, Instagram Reels, and TikTok). It incorporates speech transcription, scene detection, AI-driven highlight detection, intelligent face tracking reframing, animated karaoke subtitles, social metadata generation, and background music integration.
 
 The repository is built on a clean Python architecture, combining a **FastAPI backend** (with WebSocket support and background daemon workers) and a **custom lightweight web frontend** (HTML5, CSS, vanilla JS with live progress boards and preview pickers).
 
@@ -21,14 +21,14 @@ The local hardware (Intel i7-13650HX, 16GB DDR5 RAM, NVIDIA GeForce RTX 5050 8GB
 
 | Component | Target / Detected Specification | Status | Findings & Notes |
 | :--- | :--- | :--- | :--- |
-| **Operating System** | Windows 11 Home 64-bit | **Compatible** | Fully supported by ClipForge Windows runner. |
+| **Operating System** | Windows 11 Home 64-bit | **Compatible** | Fully supported by Frameza Windows runner. |
 | **CPU** | Intel Core i7-13650HX (14 cores, 20 threads) | **Compatible** | High multithreaded capacity for audio DSP and parallel clip rendering. |
 | **RAM** | 15.71 GB Visible (DDR5), 4.44 GB Currently Free | **Compatible** | Sufficient for running local Whisper models (small/int8 or large-v3) and 3B–8B local LLMs with quantized weights. |
 | **Storage** | C: (34.7 GB free) / D: (43.8 GB free) | **Compatible** | Workspace is on `D:\Project Development\Python\AI-Video-Clipper`. Adequate room for models, FFmpeg, and temporary render caches. |
 | **NVIDIA GPU** | NVIDIA GeForce RTX 5050 Laptop GPU (8151 MiB VRAM) | **Detected** | Blackwell architecture with 9th Gen NVENC encoder. |
 | **NVIDIA Driver** | 610.74 (WDDM), CUDA UMD 13.3 | **Compatible** | Driver is modern and fully supports CUDA 12/13 and NVENC API. |
 | **Git** | git version 2.56.0.windows.4 | **Available** | Located in `C:\Program Files\Git\cmd\git.exe`. |
-| **Python Installations** | Python 3.10.11 (default in PATH)<br>Python 3.11.9 (`%LOCALAPPDATA%\Programs\Python\Python311`) | **Action Required** | Python 3.10 is currently first in PATH. Python 3.11.9 is installed, but `py -3.11` fails because Windows `py.exe` has not registered it. ClipForge strictly enforces Python 3.11 for MediaPipe compatibility. |
+| **Python Installations** | Python 3.10.11 (default in PATH)<br>Python 3.11.9 (`%LOCALAPPDATA%\Programs\Python\Python311`) | **Action Required** | Python 3.10 is currently first in PATH. Python 3.11.9 is installed, but `py -3.11` fails because Windows `py.exe` has not registered it. Frameza strictly enforces Python 3.11 for MediaPipe compatibility. |
 | **Python Environment** | Global Python 3.11 has only base `pip` (24.0) | **Missing venv** | No `.venv` exists in the repository. Dependencies in `requirements.txt` are not yet installed. |
 | **FFmpeg / FFprobe** | Not found in PATH or in `tools/ffmpeg/` | **Missing** | `ffmpeg -version` fails; `check_gpu.py` fails on NVENC smoke test due to missing FFmpeg binary. |
 | **CUDA Runtime** | ctranslate2 / cuBLAS / cuDNN not installed | **Missing in venv** | `check_gpu.py` reports `No module named 'ctranslate2'`, missing `nvidia-cublas` and `nvidia-cudnn`. |
@@ -135,7 +135,7 @@ The local hardware (Intel i7-13650HX, 16GB DDR5 RAM, NVIDIA GeForce RTX 5050 8GB
 ### B. Missing Core Binaries
 1. **FFmpeg / FFprobe:**
    - Neither binary exists in system PATH or repository `tools/` directory.
-   - ClipForge includes a bootstrap download mechanism in `setup_env.py` (`FFMPEG_WIN_URL` pointing to BtbN GPL builds), or a portable Gyan.dev/BtbN release can be placed in `tools/ffmpeg/bin/`.
+   - Frameza includes a bootstrap download mechanism in `setup_env.py` (`FFMPEG_WIN_URL` pointing to BtbN GPL builds), or a portable Gyan.dev/BtbN release can be placed in `tools/ffmpeg/bin/`.
    - FFmpeg MUST include `h264_nvenc` and `libass` (standard in Gyan.dev and BtbN Windows builds).
 
 ### C. Missing Python Packages

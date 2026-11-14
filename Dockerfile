@@ -1,4 +1,4 @@
-# ClipForge — python:3.11 pinned (MediaPipe wheel compatibility).
+# Frameza — python:3.11 pinned (MediaPipe wheel compatibility).
 # FFmpeg comes from Debian bookworm (5.1.x) and is verified at build time.
 FROM python:3.11-slim-bookworm
 

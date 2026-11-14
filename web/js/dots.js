@@ -1,4 +1,4 @@
-/* Dot-matrix progress — ClipForge's signature element.
+/* Dot-matrix progress — Frameza's signature element.
  *
  * Canvas-rendered grid of dots that fills left-to-right as work progresses.
  * Full variant: the pipeline progress board. Mini variant: static virality

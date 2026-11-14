@@ -3,7 +3,7 @@ so one bad clip or stage never kills the whole run (or the batch queue)."""
 from __future__ import annotations
 
 
-class ClipForgeError(Exception):
+class FramezaError(Exception):
     """Base structured error: stage + message + optional detail payload."""
 
     stage = "general"
@@ -15,58 +15,62 @@ class ClipForgeError(Exception):
         super().__init__(f"[{self.stage}] {message}" + (f" — {detail}" if detail else ""))
 
 
-class ConfigError(ClipForgeError):
+# Backwards-compatibility alias
+ClipForgeError = FramezaError
+
+
+class ConfigError(FramezaError):
     stage = "config"
 
 
-class IngestError(ClipForgeError):
+class IngestError(FramezaError):
     stage = "ingest"
 
 
-class TranscribeError(ClipForgeError):
+class TranscribeError(FramezaError):
     stage = "transcribe"
 
 
-class SceneError(ClipForgeError):
+class SceneError(FramezaError):
     stage = "scenes"
 
 
-class HighlightError(ClipForgeError):
+class HighlightError(FramezaError):
     stage = "highlights"
 
 
-class CutError(ClipForgeError):
+class CutError(FramezaError):
     stage = "cut"
 
 
-class ReframeError(ClipForgeError):
+class ReframeError(FramezaError):
     stage = "reframe"
 
 
-class CaptionError(ClipForgeError):
+class CaptionError(FramezaError):
     stage = "captions"
 
 
-class MetadataError(ClipForgeError):
+class MetadataError(FramezaError):
     stage = "metadata"
 
 
-class StyleError(ClipForgeError):
+class StyleError(FramezaError):
     stage = "style"
 
 
-class LLMError(ClipForgeError):
+class LLMError(FramezaError):
     stage = "llm"
 
 
-class JobCancelled(ClipForgeError):
+class JobCancelled(FramezaError):
     """Raised between pipeline stages when the caller requested a cancel.
     Not a failure: the job record is still written with status 'cancelled'."""
 
     stage = "cancel"
 
 
-class UploadError(ClipForgeError):
+class UploadError(FramezaError):
     stage = "upload"
 
 

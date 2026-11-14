@@ -29,7 +29,7 @@ import uuid
 from pathlib import Path
 
 from config import ROOT, apply_run_options, load_config
-from errors import ClipForgeError
+from errors import FramezaError
 from logutil import get_logger
 
 log = get_logger("channels")
@@ -39,7 +39,7 @@ _store_lock = threading.Lock()
 _poll_thread: threading.Thread | None = None
 
 
-class ChannelError(ClipForgeError):
+class ChannelError(FramezaError):
     stage = "channels"
 
 

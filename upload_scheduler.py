@@ -487,7 +487,7 @@ _END_TMP = ROOT / "cache" / "upload_end"
 def _safe_drawtext(s: str) -> str:
     """Injection-proof drawtext text: letters/digits/space only."""
     s = "".join(c for c in (s or "") if c.isalnum() or c == " ").strip()
-    return s[:40] or "ClipForge"
+    return s[:40] or "Frameza"
 
 
 def apply_end_watermark(video_path, cfg: dict) -> tuple[str, bool]:
@@ -518,7 +518,7 @@ def _render_end_card(src: Path, wm: dict, cfg: dict) -> Path:
     info = ffutil.probe(src)
     w, h, fps = info["width"], info["height"], max(1.0, info["fps"])
     dur = min(3.0, max(0.5, float(wm.get("duration_s", 1.2))))
-    text = _safe_drawtext(wm.get("text", "ClipForge"))
+    text = _safe_drawtext(wm.get("text", "Frameza"))
     font = ffutil.filter_path(BRAND_FONT)
     fade = max(0.2, dur * 0.4)
 
@@ -620,7 +620,7 @@ def upload_batch(youtube, analytics, cfg: dict, log_data: dict, limit: int,
             result = upload_one(youtube, clip, publish_at, category_id, cfg=cfg)
         except UploadError as e:
             log.error("upload failed for %s: %s", clip["key"], e)
-            notify("ClipForge upload FAILED", f"{clip['key']}: {e}\nWill retry next cycle.",
+            notify("Frameza upload FAILED", f"{clip['key']}: {e}\nWill retry next cycle.",
                   ntfy_topic)
             break
         log_data["uploads"][clip["key"]] = {
@@ -796,7 +796,7 @@ def upload_now(youtube, cfg: dict, log_data: dict, clips: list[dict],
             _archive_after_upload(video, clip, result, snippet, now_iso, None)
         except UploadError as e:
             log.error("upload now failed for %s: %s", clip["key"], e)
-            notify("ClipForge upload FAILED", f"{clip['key']}: {e}", ntfy_topic)
+            notify("Frameza upload FAILED", f"{clip['key']}: {e}", ntfy_topic)
             item = {"key": clip["key"], "title": snippet["title"],
                     "status": "failed", "error": str(e)}
             results.append(item)
@@ -942,7 +942,7 @@ def drain_queue(cfg: dict, service=None) -> int:
                 except UploadError as e:
                     log.error("queue upload failed for %s: %s",
                               clip["key"], e)
-                    notify("ClipForge upload FAILED",
+                    notify("Frameza upload FAILED",
                            f"{clip['key']}: {e}\nStays queued.", ntfy)
                     break
                 log_data["uploads"][clip["key"]] = {
@@ -1078,7 +1078,7 @@ def watch(cfg: dict) -> None:
     """Full-auto fallback: scan on an interval, upload new clips, respect
     the daily cap. Primary path is the pipeline hook (trigger_after_render);
     use this when clips were rendered by a run that predates this feature or
-    while ClipForge wasn't running."""
+    while Frameza wasn't running."""
     upload_cfg = cfg.get("upload", {})
     interval = upload_cfg.get("watch_interval_s", 60)
     max_per_day = upload_cfg.get("max_per_day", 20)
@@ -1087,7 +1087,7 @@ def watch(cfg: dict) -> None:
     youtube = youtube_upload.build_service()
     analytics = youtube_upload.build_analytics_service()
     log.info("watching %s every %ds (daily cap: %d)", OUTPUT_DIR, interval, max_per_day)
-    notify("ClipForge watcher started", f"Auto-upload is live. Cap {max_per_day}/day.", ntfy_topic)
+    notify("Frameza watcher started", f"Auto-upload is live. Cap {max_per_day}/day.", ntfy_topic)
 
     announced_cap = False
     while True:
@@ -1108,7 +1108,7 @@ def watch(cfg: dict) -> None:
             return
         except Exception as e:  # noqa: BLE001 — network blip, expired token, etc.
             log.warning("watcher error (will retry): %s", e)
-            notify("ClipForge watcher error", f"{e}\nRetrying in {interval}s.", ntfy_topic)
+            notify("Frameza watcher error", f"{e}\nRetrying in {interval}s.", ntfy_topic)
         try:
             time.sleep(interval)
         except KeyboardInterrupt:

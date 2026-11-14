@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 from config import ROOT, load_config
-from errors import ClipForgeError
+from errors import FramezaError
 from logutil import get_logger
 
 log = get_logger("bundle")
@@ -17,7 +17,7 @@ log = get_logger("bundle")
 def _load_job(job_dir: Path) -> dict:
     p = job_dir / "job.json"
     if not p.exists():
-        raise ClipForgeError(f"no job.json in {job_dir}")
+        raise FramezaError(f"no job.json in {job_dir}")
     return json.loads(p.read_text(encoding="utf-8"))
 
 
@@ -44,12 +44,12 @@ def zip_job(job_dir: str | Path, kept_only: bool = True) -> Path:
     out = job_dir / "clips_bundle.zip"
     clips = [c for c in job["clips"] if c.get("kept") or not kept_only]
     if not clips:
-        raise ClipForgeError(f"no clips to bundle in {job_dir}")
+        raise FramezaError(f"no clips to bundle in {job_dir}")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         total = sum(_add_clip(z, c) for c in clips)
     if total == 0:
         out.unlink(missing_ok=True)
-        raise ClipForgeError(f"no clip files found on disk in {job_dir}")
+        raise FramezaError(f"no clip files found on disk in {job_dir}")
     log.info("bundled %d files from %d clips -> %s", total, len(clips), out.name)
     return out
 
@@ -61,7 +61,7 @@ def zip_jobs(job_dirs: list[str | Path], cfg: dict | None = None,
     cfg = cfg or load_config()
     dirs = [Path(d) for d in job_dirs]
     if not dirs:
-        raise ClipForgeError("no jobs to bundle")
+        raise FramezaError("no jobs to bundle")
     ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = ROOT / cfg["paths"]["output_dir"] / f"_bundle_{ts}.zip"
     total = 0
@@ -69,14 +69,14 @@ def zip_jobs(job_dirs: list[str | Path], cfg: dict | None = None,
         for d in dirs:
             try:
                 job = _load_job(d)
-            except ClipForgeError:
+            except FramezaError:
                 continue
             for c in job["clips"]:
                 if c.get("kept") or not kept_only:
                     total += _add_clip(z, c, prefix=f"{d.name}/")
     if total == 0:
         out.unlink(missing_ok=True)
-        raise ClipForgeError("no clip files found across the given jobs")
+        raise FramezaError("no clip files found across the given jobs")
     log.info("bundled %d files from %d jobs -> %s", total, len(dirs), out.name)
     return out
 

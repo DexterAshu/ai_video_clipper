@@ -1,4 +1,4 @@
-# ClipForge overnight run — REPORT
+# Frameza overnight run — REPORT
 
 **Branch:** `feature/overnight-upgrades` (pushed to origin after every commit)
 **Base:** `feature/style-refiner` (see "Branch decision" below)
@@ -80,7 +80,7 @@ retention guidance. Key inputs used tonight:
 ## Exact commands (verification)
 
 ```
-cd E:\imp\projects\clipforge
+cd E:\imp\projects\frameza
 .venv\Scripts\python.exe -m pytest -q                               # 144 passed, 1 skipped
 .venv\Scripts\python.exe pipeline.py --sample --provider mock       # completes; metadata carries virality.signals; per-clip render_s recorded
 .venv\Scripts\python.exe virality.py                                # engagement-signals self-check

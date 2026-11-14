@@ -58,7 +58,7 @@ render:
 
 ### A. GPU Acceleration & Diagnostic Verdict (`check_gpu.py`)
 ```
-ClipForge GPU check
+Frameza GPU check
 ========================================
 [1] NVIDIA driver:       NVIDIA GeForce RTX 5050 Laptop GPU, 610.74
 [2] ffmpeg / NVENC:      D:\Project Development\Python\AI-Video-Clipper\tools\ffmpeg\bin\ffmpeg.exe

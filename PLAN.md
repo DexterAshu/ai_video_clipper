@@ -1,4 +1,4 @@
-# ClipForge — PLAN.md
+# Frameza — PLAN.md
 
 Self-hosted video repurposing tool: long video in → ranked, captioned, vertical 30–60s clips out.
 Zero-touch build; every gate runs keyless (mock LLM provider + deterministic fallbacks).
@@ -147,9 +147,9 @@ Live calls never happen in gates (gates force `--provider mock`).
 
 | Decision | Alternatives considered | Rationale |
 |---|---|---|
-| Project name/dir `clipforge` at C:\Users\HP\clipforge | opusclip-local, ~/projects | short, descriptive; home dir not a repo |
+| Project name/dir `frameza` at C:\Users\HP\frameza | opusclip-local, ~/projects | short, descriptive; home dir not a repo |
 | Python via winget 3.11.x | pyenv-win, store python | winget already present, silent-capable; spec pins 3.11 |
-| Flat module layout (no src/ package) | src/clipforge pkg | spec names modules as top-level files (pipeline.py etc.); simpler CLI |
+| Flat module layout (no src/ package) | src/frameza pkg | spec names modules as top-level files (pipeline.py etc.); simpler CLI |
 | JSON Schema dicts + jsonschema lib for contracts | pydantic | schema dicts feed Gemini response_schema directly; single source of truth |
 | Mock provider synthesizes from schema + task-specific canned logic | random data | deterministic, schema-valid, exercises real code paths |
 | Sample: archive.org public-domain talk | Pexels, Wikimedia | direct mp4, stable, license-clean; HEAD-verified w/ mirrors |

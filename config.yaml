@@ -327,7 +327,7 @@ upload:
                                 # last configured hour so max_per_day is reachable
                                 # even with fewer configured hours than uploads/day
   publish_timing:                # self-learning publish hours (publish_timing.py) —
-                                # learns from ClipForge's OWN upload history/views,
+                                # learns from Frameza's OWN upload history/views,
                                 # NOT YouTube's audience-online chart (the API doesn't
                                 # expose that). See publish_timing.py's module docstring.
     enabled: true                 # learn once the gates below pass; false pins to
@@ -349,11 +349,11 @@ upload:
   watch_interval_s: 60           # poll interval for `python upload.py watch`
   end_watermark:                 # branded outro appended ONLY to the uploaded
     enabled: false               # copy (the archived render stays clean)
-    text: "ClipForge"            # wordmark on the end card (Doto brand font)
+    text: "Frameza"            # wordmark on the end card (Doto brand font)
     duration_s: 1.2              # 0.5-3.0s; length of the appended end card
 
 ui:
-  auto_open: true               # open the UI automatically when ClipForge starts
+  auto_open: true               # open the UI automatically when Frameza starts
   window_mode: app              # app = chromeless --app window (Edge/Chrome); tab = normal browser tab
 
 debug: false                    # true: persist transcripts, prompts, raw LLM responses,

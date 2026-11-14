@@ -1,4 +1,4 @@
-"""Standalone GPU health check for ClipForge — plain-language verdict on
+"""Standalone GPU health check for Frameza — plain-language verdict on
 whether NVENC encoding and faster-whisper transcription will actually run on
 the GPU, and the SPECIFIC reason when they won't.
 
@@ -30,7 +30,7 @@ def _nvidia_smi() -> str | None:
 
 
 def main() -> int:
-    print("ClipForge GPU check\n" + "=" * 40)
+    print("Frameza GPU check\n" + "=" * 40)
 
     print("\n[1] NVIDIA driver")
     gpu = _nvidia_smi()

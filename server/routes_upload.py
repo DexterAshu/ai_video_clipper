@@ -227,7 +227,7 @@ def youtube_queue():
         "uploads_today": sched.uploads_today(log_data, account),
         "max_per_day": sched.account_cfg(cfg, account)["max_per_day"],
         "end_watermark": {"enabled": bool(wm.get("enabled")),
-                          "text": wm.get("text", "ClipForge"),
+                          "text": wm.get("text", "Frameza"),
                           "duration_s": wm.get("duration_s", 1.2)},
         "uploaded": [{"title": e.get("title", "Untitled"),
                       "video_id": e.get("video_id", ""),

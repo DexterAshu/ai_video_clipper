@@ -18,8 +18,8 @@ log = get_logger("server")
 
 
 def main() -> None:
-    port = int(os.environ.get("CLIPFORGE_PORT", "7860"))
-    host = os.environ.get("CLIPFORGE_HOST", "127.0.0.1")
+    port = int(os.environ.get("FRAMEZA_PORT", os.environ.get("CLIPFORGE_PORT", "7860")))
+    host = os.environ.get("FRAMEZA_HOST", os.environ.get("CLIPFORGE_HOST", "127.0.0.1"))
     cfg = load_config()
     if host == "127.0.0.1":
         # opens once the server answers HTTP (launcher polls readiness)

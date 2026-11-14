@@ -41,13 +41,17 @@ const routes = {
   workspaces: renderWorkspaceSelect,
 };
 
-const WORKSPACE_KEY = "clipforge_workspace";
-const WORKSPACE_NAME_KEY = "clipforge_workspace_name";
+const WORKSPACE_KEY = "frameza_workspace";
+const LEGACY_WORKSPACE_KEY = "clipforge_workspace";
+const WORKSPACE_NAME_KEY = "frameza_workspace_name";
 
 function navigate() {
   const [, name = "", ...rest] = location.hash.split("/");
   // auto-default to 'default' workspace so user directly lands on home
   if (!localStorage.getItem(WORKSPACE_KEY)) {
+    const legacy = localStorage.getItem("clipforge_workspace");
+    if (legacy) { localStorage.setItem(WORKSPACE_KEY, legacy); localStorage.setItem(WORKSPACE_NAME_KEY, localStorage.getItem("clipforge_workspace_name") || "Default"); }
+  }
     localStorage.setItem(WORKSPACE_KEY, "default");
     localStorage.setItem(WORKSPACE_NAME_KEY, "Default");
   }

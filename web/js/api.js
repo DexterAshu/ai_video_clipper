@@ -1,11 +1,11 @@
-/* Thin client for the ClipForge API. Every helper throws an Error whose
+/* Thin client for the Frameza API. Every helper throws an Error whose
  * message is the server's plain-language sentence, ready to show verbatim. */
 
 async function request(method, url, body) {
   let res;
   try {
     const headers = body !== undefined ? { "Content-Type": "application/json" } : {};
-    const workspace = localStorage.getItem("clipforge_workspace");
+    const workspace = localStorage.getItem("frameza_workspace") || localStorage.getItem("clipforge_workspace");
     if (workspace) headers["X-Workspace"] = workspace;
     res = await fetch(url, {
       method,
@@ -13,7 +13,7 @@ async function request(method, url, body) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error("Can't reach ClipForge — is the app still running?");
+    throw new Error("Can't reach Frameza — is the app still running?");
   }
   let data = null;
   try { data = await res.json(); } catch { /* non-JSON error page */ }
@@ -36,7 +36,7 @@ export function uploadFile(url, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
-    const workspace = localStorage.getItem("clipforge_workspace");
+    const workspace = localStorage.getItem("frameza_workspace") || localStorage.getItem("clipforge_workspace");
     if (workspace) xhr.setRequestHeader("X-Workspace", workspace);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -49,7 +49,7 @@ export function uploadFile(url, file, onProgress) {
         || "Uploading that file didn't work — try again."));
     };
     xhr.onerror = () =>
-      reject(new Error("Can't reach ClipForge — is the app still running?"));
+      reject(new Error("Can't reach Frameza — is the app still running?"));
     const form = new FormData();
     form.append("file", file);
     xhr.send(form);

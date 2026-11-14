@@ -1,7 +1,7 @@
 """Read-only Analytics tab: channel overview + per-video table for uploads
-made through ClipForge, plus recommendations derived from that data. Never
+made through Frameza, plus recommendations derived from that data. Never
 writes to YouTube — the one write path here (`apply_publish_slot`) only
-touches ClipForge's own config."""
+touches Frameza's own config."""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
