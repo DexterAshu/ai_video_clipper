@@ -72,7 +72,9 @@ def plan_clip_layouts(raw_targets: list[dict | None],
                       fps: float = 12.0,
                       sentence_bounds: list[float] | None = None,
                       min_hold_s: float = DEFAULT_MIN_HOLD_S,
-                      force_layout: str | None = None) -> list[DirectorSegment]:
+                      force_layout: str | None = None,
+                      sw: int = 1920,
+                      sh: int = 1080) -> list[DirectorSegment]:
     """Analyze multi-face tracks and timeline boundaries to produce a stable,
     professionally directed sequence of layout segments."""
     if duration_s <= 0:
@@ -80,10 +82,19 @@ def plan_clip_layouts(raw_targets: list[dict | None],
 
     # Manual layout override from Studio
     if force_layout and force_layout in SUPPORTED_LAYOUTS:
+        avg_a = {}
+        avg_b = {}
+        if raw_targets:
+            sample_a = [t.get("primary_face") or t for t in raw_targets if t and ("cx" in t or "primary_face" in t)]
+            sample_b = [t.get("secondary_face") or t for t in raw_targets if t and t.get("secondary_face")]
+            avg_a = _mean_target(sample_a)
+            avg_b = _mean_target(sample_b)
         return [DirectorSegment(
             start_s=0.0,
             end_s=duration_s,
             layout=force_layout,
+            target_a=avg_a,
+            target_b=avg_b,
             reason=f"manual override: {force_layout}"
         )]
 
@@ -104,6 +115,9 @@ def plan_clip_layouts(raw_targets: list[dict | None],
     sample_targets_a = []
     sample_targets_b = []
 
+    # Dynamic 2-person span limit: fits comfortably within ~85% of the 9:16 crop width
+    max_two_shot_span = int(sh * 9 / 16 * 0.85)
+
     for i, t in enumerate(raw_targets):
         if t is None:
             sample_layouts.append(LAYOUT_WIDE)
@@ -117,8 +131,8 @@ def plan_clip_layouts(raw_targets: list[dict | None],
 
         if num_faces >= 2:
             span_w = t.get("w", 0)
-            # If two faces are within comfortable 2-shot distance (<= 480px on 1080p source)
-            if multi and span_w > 0 and span_w <= 480:
+            # If two faces are within comfortable 2-shot distance across any source resolution
+            if multi and span_w > 0 and span_w <= max_two_shot_span:
                 sample_layouts.append(LAYOUT_TWO_PERSON)
                 sample_targets_a.append(t)
                 sample_targets_b.append({})
@@ -237,17 +251,20 @@ def render_director_clip(source: Path,
     src_info = probe(source)
     sw = int(src_info["width"])
     sh = int(src_info["height"])
+    has_audio = bool(src_info.get("has_audio", True))
+    audio_args = ["-c:a", "aac", "-b:a", cfg["render"].get("audio_bitrate", "128k"), "-ar", "44100", "-ac", "2"] if has_audio else ["-an"]
 
     # If only 1 segment and layout is full, use standard fast single-crop path
     if len(segments) == 1 and segments[0].layout == LAYOUT_FULL:
         target_cx = segments[0].target_a.get("cx", sw / 2.0) or (sw / 2.0)
         target_cy = segments[0].target_a.get("cy", sh / 2.0) or (sh / 2.0)
-        cw = int(sh * 9 / 16) & ~1
+        cw = max(2, min(sw, int(sh * 9 / 16) & ~1))
+        ch = max(2, min(sh, int(cw * 16 / 9) & ~1))
         top_x = max(0.0, min(sw - cw, target_cx - cw / 2.0))
-        vf = f"crop={cw}:{sh}:{top_x:.1f}:0,scale={ow}:{oh}:flags=lanczos,setsar=1"
+        top_y = max(0.0, min(sh - ch, target_cy - ch / 2.0))
+        vf = f"crop={cw}:{ch}:{top_x:.1f}:{top_y:.1f},scale={ow}:{oh}:flags=lanczos,setsar=1"
         args = ["-ss", f"{clip_start:.3f}", "-i", source, "-t", f"{dur:.3f}",
-                "-vf", vf] + video_encode_args(cfg) + [
-                "-c:a", "aac", "-b:a", cfg["render"]["audio_bitrate"],
+                "-vf", vf] + video_encode_args(cfg) + audio_args + [
                 "-movflags", "+faststart", out_path]
         run_ffmpeg(args)
         return {"layout": LAYOUT_FULL, "segments": 1, "out": str(out_path)}
@@ -267,21 +284,28 @@ def render_director_clip(source: Path,
 
             filter_str = _build_segment_filter(seg, sw, sh, ow, oh)
             cmd = ["-ss", f"{s_start:.3f}", "-i", source, "-t", f"{s_dur:.3f}",
-                   "-vf", filter_str] + video_encode_args(cfg) + [
-                   "-c:a", "aac", "-b:a", cfg["render"]["audio_bitrate"],
+                   "-vf", filter_str] + video_encode_args(cfg) + audio_args + [
                    "-movflags", "+faststart", seg_out]
             run_ffmpeg(cmd)
             if seg_out.exists():
                 seg_files.append(seg_out)
 
-        # Concatenate rendered segment files
-        concat_list = temp_dir / "concat.txt"
-        with open(concat_list, "w", encoding="utf-8") as f:
-            for sf in seg_files:
-                f.write(f"file '{filter_path(sf)}'\n")
+        if not seg_files:
+            raise ReframeError("director produced no segment files")
 
-        run_ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_list,
-                    "-c", "copy", "-movflags", "+faststart", out_path])
+        if len(seg_files) == 1:
+            if out_path.exists():
+                out_path.unlink()
+            seg_files[0].replace(out_path)
+        else:
+            # Concatenate rendered segment files (use relative names within temp_dir for universal path safety)
+            concat_list = temp_dir / "concat.txt"
+            with open(concat_list, "w", encoding="utf-8") as f:
+                for sf in seg_files:
+                    f.write(f"file '{sf.name}'\n")
+
+            run_ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_list,
+                        "-c", "copy", "-movflags", "+faststart", out_path])
     finally:
         # Cleanup temporary files
         import shutil
@@ -298,16 +322,123 @@ def render_director_clip(source: Path,
     }
 
 
+def direct_and_render_clip(source: Path | str,
+                           clip_start: float,
+                           clip_end: float,
+                           out_path: Path | str,
+                           cfg: dict | None = None,
+                           transcript: dict | None = None,
+                           framing_mode: str = "smart_director",
+                           cached_plan_path: Path | None = None,
+                           manual_zoom: float = 1.0,
+                           crop_x_offset: float = 0.0,
+                           crop_y_offset: float = 0.0,
+                           ow: int = 1080,
+                           oh: int = 1920) -> dict:
+    """High-level unified pipeline and studio entrypoint for Dynamic AI Director:
+    1. Validates framing_mode (rejects unsupported modes with clear error).
+    2. Reuses cached layout plan when available or plans dynamically.
+    3. Analyzes audio-visual face tracking and aligns with sentence boundaries.
+    4. Renders output with render_director_clip.
+    5. Returns metrics dictionary."""
+    import json
+    import reframe
+
+    cfg = cfg or load_config()
+    source, out_path = Path(source), Path(out_path)
+    dur = max(0.1, clip_end - clip_start)
+
+    valid_modes = SUPPORTED_LAYOUTS + ("smart_director",)
+    if framing_mode not in valid_modes:
+        raise ValueError(f"Unsupported framing mode: '{framing_mode}'. Supported modes: {valid_modes}")
+
+    src_info = probe(source)
+    sw = int(src_info["width"])
+    sh = int(src_info["height"])
+
+    # Check for cached plan if automatic mode
+    segments: list[DirectorSegment] = []
+    if cached_plan_path and cached_plan_path.exists() and framing_mode == "smart_director":
+        try:
+            cached_data = json.loads(cached_plan_path.read_text(encoding="utf-8"))
+            if isinstance(cached_data, list) and len(cached_data) > 0:
+                first_ta = cached_data[0].get("target_a", {})
+                first_cx = float(first_ta.get("cx", 0))
+                first_fw = float(first_ta.get("fw", 0))
+                # Detect stale unscaled proxy coordinates (e.g. 1080p source with 360p proxy coords)
+                if sw >= 1280 and 0 < first_cx <= 640 and 0 < first_fw <= 110:
+                    log.info("cached director plan has stale unscaled proxy coords - re-planning with source scale")
+                    segments = []
+                else:
+                    segments = [
+                        DirectorSegment(
+                            start_s=float(s["start"]),
+                            end_s=float(s["end"]),
+                            layout=s["layout"],
+                            target_a=s.get("target_a", {}),
+                            target_b=s.get("target_b", {}),
+                            reason=s.get("reason", "cached plan")
+                        )
+                        for s in cached_data if "start" in s and "end" in s and "layout" in s
+                    ]
+        except Exception as e:
+            log.debug("could not load cached director plan (%s) - re-planning", e)
+            segments = []
+
+    if not segments:
+        # Extract sentence boundaries from transcript
+        sentence_bounds: list[float] = []
+        if transcript:
+            for s in transcript.get("segments", []):
+                for b in (s.get("start"), s.get("end")):
+                    if b is not None and clip_start <= b <= clip_end:
+                        sentence_bounds.append(round(b - clip_start, 3))
+            if not sentence_bounds and "words" in transcript:
+                for w in transcript.get("words", []):
+                    end_t = w.get("end")
+                    if end_t is not None and clip_start <= end_t <= clip_end:
+                        sentence_bounds.append(round(end_t - clip_start, 3))
+        sentence_bounds = sorted(set(sentence_bounds))
+
+        # Analyze face targets and audio-visual speech activity
+        raw_targets, face_tracks, _ = reframe.analyze_clip_for_director(source, clip_start, dur, cfg)
+
+        force_layout = framing_mode if framing_mode in SUPPORTED_LAYOUTS else None
+        segments = plan_clip_layouts(
+            raw_targets=raw_targets,
+            face_tracks=face_tracks,
+            duration_s=dur,
+            fps=12.0,
+            sentence_bounds=sentence_bounds,
+            force_layout=force_layout,
+            sw=sw,
+            sh=sh,
+        )
+
+        if cached_plan_path and segments:
+            try:
+                cached_plan_path.parent.mkdir(parents=True, exist_ok=True)
+                cached_plan_path.write_text(
+                    json.dumps([s.to_dict() for s in segments], indent=2, ensure_ascii=False),
+                    encoding="utf-8"
+                )
+            except Exception as e:
+                log.debug("could not save director_plan.json: %s", e)
+
+    metrics = render_director_clip(source, clip_start, clip_end, segments, out_path, cfg, ow=ow, oh=oh)
+    metrics["framing_mode"] = framing_mode
+    return metrics
+
+
 def _build_segment_filter(seg: DirectorSegment, sw: int, sh: int, ow: int, oh: int) -> str:
-    """Construct FFmpeg filtergraph for a specific layout mode."""
+    """Construct FFmpeg filtergraph for a specific layout mode with strict geometry guards."""
     lay = seg.layout
 
     if lay == LAYOUT_SPLIT_TB:
         # Top-Bottom split: upper panel (ow x oh/2), lower panel (ow x oh/2)
-        # Subtle 2px dark separation line
         half_h = oh // 2
-        crop_w = int(sw * 0.55) & ~1
-        crop_h = int(crop_w * (half_h / ow)) & ~1
+        crop_w = max(2, min(sw, int(sw * 0.55) & ~1))
+        crop_h = max(2, min(sh, int(crop_w * (half_h / ow)) & ~1))
 
         t_a = seg.target_a
         t_b = seg.target_b
@@ -335,17 +466,18 @@ def _build_segment_filter(seg: DirectorSegment, sw: int, sh: int, ow: int, oh: i
     elif lay == LAYOUT_SPLIT_LR:
         # Left-Right split: left panel (ow/2 x oh), right panel (ow/2 x oh)
         half_w = ow // 2
-        crop_w = int(sh * (half_w / oh)) & ~1
+        crop_w = max(2, min(sw, int(sh * (half_w / oh)) & ~1))
         crop_h = sh
 
         t_a = seg.target_a
         t_b = seg.target_b
 
-        cx_a = t_a.get("cx", sw * 0.3) or (sw * 0.3)
-        x_a = max(0.0, min(sw - crop_w, cx_a - crop_w / 2.0))
-
-        cx_b = t_b.get("cx", sw * 0.7) or (sw * 0.7)
-        x_b = max(0.0, min(sw - crop_w, cx_b - crop_w / 2.0))
+        cx_1 = t_a.get("cx", sw * 0.3) or (sw * 0.3)
+        cx_2 = t_b.get("cx", sw * 0.7) or (sw * 0.7)
+        cx_left = min(cx_1, cx_2)
+        cx_right = max(cx_1, cx_2)
+        x_a = max(0.0, min(sw - crop_w, cx_left - crop_w / 2.0))
+        x_b = max(0.0, min(sw - crop_w, cx_right - crop_w / 2.0))
 
         return (
             f"[0:v]split=2[v_l_in][v_r_in];"
@@ -369,18 +501,23 @@ def _build_segment_filter(seg: DirectorSegment, sw: int, sh: int, ow: int, oh: i
 
     elif lay == LAYOUT_TWO_PERSON:
         # Two-person full composition: crop encompassing both faces
-        cw = int(sh * 9 / 16) & ~1
-        t = seg.target_a
-        cx = t.get("cx", sw / 2.0) or (sw / 2.0)
-        top_x = max(0.0, min(sw - cw, cx - cw / 2.0))
-        return f"crop={cw}:{sh}:{top_x:.1f}:0,scale={ow}:{oh}:flags=lanczos,setsar=1"
-
-    else:
-        # Full-Screen Single Speaker
-        cw = int(sh * 9 / 16) & ~1
+        cw = max(2, min(sw, int(sh * 9 / 16) & ~1))
+        ch = max(2, min(sh, int(cw * 16 / 9) & ~1))
         t = seg.target_a
         cx = t.get("cx", sw / 2.0) or (sw / 2.0)
         cy = t.get("cy", sh / 2.0) or (sh / 2.0)
         top_x = max(0.0, min(sw - cw, cx - cw / 2.0))
-        return f"crop={cw}:{sh}:{top_x:.1f}:0,scale={ow}:{oh}:flags=lanczos,setsar=1"
+        top_y = max(0.0, min(sh - ch, cy - ch / 2.0))
+        return f"crop={cw}:{ch}:{top_x:.1f}:{top_y:.1f},scale={ow}:{oh}:flags=lanczos,setsar=1"
+
+    else:
+        # Full-Screen Single Speaker
+        cw = max(2, min(sw, int(sh * 9 / 16) & ~1))
+        ch = max(2, min(sh, int(cw * 16 / 9) & ~1))
+        t = seg.target_a
+        cx = t.get("cx", sw / 2.0) or (sw / 2.0)
+        cy = t.get("cy", sh / 2.0) or (sh / 2.0)
+        top_x = max(0.0, min(sw - cw, cx - cw / 2.0))
+        top_y = max(0.0, min(sh - ch, cy - ch / 2.0))
+        return f"crop={cw}:{ch}:{top_x:.1f}:{top_y:.1f},scale={ow}:{oh}:flags=lanczos,setsar=1"
 

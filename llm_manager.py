@@ -283,9 +283,12 @@ def query_ollama(
     timeout: float = 120.0,
     options: dict | None = None,
     cfg: dict | None = None,
-    enable_fallback: bool = True
+    enable_fallback: bool = True,
+    **kwargs
 ) -> str:
     """Execute inference on Ollama with memory controls, vision support, and graceful fallback."""
+    if "timeout_seconds" in kwargs:
+        timeout = float(kwargs["timeout_seconds"])
     import requests
     cfg = cfg or load_config()
     base = get_ollama_base_url(cfg)

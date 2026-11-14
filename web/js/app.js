@@ -713,8 +713,96 @@ function renderRun(runId) {
   const dm = createDotMatrix(canvas, { variant: "progress" });
   dm.update({ fraction: 0, state: "running" });
 
+  const STAGE_WEIGHTS = {
+    init: 0.01,
+    deps: 0.01,
+    model_download: 0.05,
+    model_load: 0.03,
+    ingest: 0.10,
+    transcribe: 0.13,
+    events: 0.02,
+    scenes: 0.04,
+    highlights: 0.05,
+    refine: 0.03,
+    render: 0.39,
+    rescore: 0.04,
+    cleanup: 0.01,
+    done: 0.05,
+  };
+
   let lastLoggedMsg = "";
+  let latestSnap = null;
+  let snapReceivedAt = 0;
+  let displayedFraction = 0;
+  let isTerminal = false;
+
+  const tick = () => {
+    if (!latestSnap || isTerminal) return;
+    const now = performance.now();
+    const dt = Math.max(0, (now - snapReceivedAt) / 1000);
+    const liveElapsed = (latestSnap.elapsed || 0) + dt;
+    const liveElapsedSec = Math.floor(liveElapsed);
+
+    // 1. Dynamic Progress Percentage & Dot-Matrix Indicator
+    const baseOverall = latestSnap.overall || 0;
+    const stages = latestSnap.stages || [];
+    const running = stages.filter((s) => s.state === "running").at(-1);
+
+    let targetFrac = baseOverall;
+    if (running) {
+      const weight = STAGE_WEIGHTS[running.key] || 0.04;
+      const maxFrac = Math.min(0.99, baseOverall + weight * 0.95);
+
+      // Only time-project during later execution stages when overall_eta is reliable
+      if (latestSnap.overall_eta != null && latestSnap.overall_eta > 0 && displayedFraction >= 0.25) {
+        const totalEst = (latestSnap.elapsed || 0) + latestSnap.overall_eta;
+        if (totalEst > 0) {
+          const projected = liveElapsed / totalEst;
+          targetFrac = Math.max(baseOverall, Math.min(maxFrac, projected));
+        }
+      }
+    }
+
+    // Smooth forward progression (never backwards)
+    if (targetFrac > displayedFraction) {
+      displayedFraction += (targetFrac - displayedFraction) * 0.15;
+      if (Math.abs(targetFrac - displayedFraction) < 0.001) {
+        displayedFraction = targetFrac;
+      }
+    } else if (baseOverall > displayedFraction) {
+      displayedFraction = baseOverall;
+    }
+
+    const currentPct = Math.min(99, Math.round(displayedFraction * 100));
+    pct.textContent = String(currentPct);
+    dm.update({ fraction: displayedFraction, state: "running" });
+
+    // 2. Dynamic Left Time & Elapsed Time
+    if (cancelBtn.disabled) {
+      eta.textContent = `stopping… · ${fmtClock(liveElapsedSec)} elapsed`;
+    } else if (latestSnap.overall_eta != null && displayedFraction >= 0.25) {
+      const liveEta = Math.max(0, Math.ceil(latestSnap.overall_eta - dt));
+      if (liveEta > 0) {
+        eta.textContent = `about ${fmtClock(liveEta)} left · ${fmtClock(liveElapsedSec)} elapsed`;
+      } else if (currentPct >= 95) {
+        eta.textContent = `almost done · ${fmtClock(liveElapsedSec)} elapsed`;
+      } else {
+        eta.textContent = `${fmtClock(liveElapsedSec)} elapsed`;
+      }
+    } else {
+      if (currentPct >= 95) {
+        eta.textContent = `almost done · ${fmtClock(liveElapsedSec)} elapsed`;
+      } else {
+        eta.textContent = `${fmtClock(liveElapsedSec)} elapsed`;
+      }
+    }
+  };
+
+  const ticker = setInterval(tick, 250);
+
   const apply = (snap) => {
+    latestSnap = snap;
+    snapReceivedAt = performance.now();
     const stages = snap.stages || [];
     const running = stages.filter((s) => s.state === "running").at(-1);
     const lastDone = stages.filter((s) => s.state === "done").at(-1);
@@ -722,11 +810,13 @@ function renderRun(runId) {
     if (current) stageTitle.textContent = current.label;
     const msg = (running && (running.message || running.current_file)) || "";
     detail.textContent = msg || " ";
-    pct.textContent = String(Math.round((snap.overall || 0) * 100));
-    eta.textContent = snap.overall_eta != null
-      ? `about ${fmtClock(snap.overall_eta)} left · ${fmtClock(snap.elapsed)} elapsed`
-      : `${fmtClock(snap.elapsed)} elapsed`;
-    dm.update({ fraction: snap.overall || 0, state: "running" });
+
+    if (snap.overall != null && snap.overall > displayedFraction) {
+      displayedFraction = snap.overall;
+    }
+
+    tick();
+
     stageList.replaceChildren(...stages
       .filter((s) => s.state !== "skipped" && s.key !== "done")
       .map((s) => el("div", {
@@ -748,16 +838,23 @@ function renderRun(runId) {
   const stop = watchRun(runId, {
     onSnapshot: apply,
     onDone: () => {
-      dm.update({ state: "done" });
+      isTerminal = true;
+      clearInterval(ticker);
+      pct.textContent = "100";
+      dm.update({ fraction: 1, state: "done" });
       stageTitle.textContent = "Done";
       detail.textContent = " ";
       setTimeout(() => { location.hash = `#/results/${encodeURIComponent(runId)}`; }, 900);
     },
     onCancelled: () => {
+      isTerminal = true;
+      clearInterval(ticker);
       toast("Stopped. Finished clips are kept.");
       location.hash = "#/";
     },
     onError: (message) => {
+      isTerminal = true;
+      clearInterval(ticker);
       dm.update({ state: "error" });
       stageTitle.textContent = "That didn't work";
       detail.textContent = message;
@@ -771,6 +868,7 @@ function renderRun(runId) {
   async function onCancel() {
     cancelBtn.disabled = true;
     cancelBtn.textContent = "Stopping…";
+    eta.textContent = "stopping…";
     try {
       await api.post(`/api/runs/${runId}/cancel`);
     } catch (e) {
@@ -797,7 +895,7 @@ function renderRun(runId) {
     }
   });
 
-  cleanup = () => { stop(); dm.destroy(); };
+  cleanup = () => { isTerminal = true; clearInterval(ticker); stop(); dm.destroy(); };
 }
 
 // ------------------------------------------------------------ activity ----

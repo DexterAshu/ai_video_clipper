@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from config import ROOT, file_hash, load_config
-from errors import SceneError
+from errors import JobCancelled, SceneError
 from ffutil import probe
 from logutil import get_logger
 from schemas import validate
@@ -15,7 +16,8 @@ from schemas import validate
 log = get_logger("scenes")
 
 
-def detect_scenes(video_path: str | Path, cfg: dict | None = None) -> dict:
+def detect_scenes(video_path: str | Path, cfg: dict | None = None,
+                  cancel=None, progress_cb=None) -> dict:
     """Returns SceneList dict (schema-validated). Zero detections → one scene
     spanning the whole video (never an empty list)."""
     cfg = cfg or load_config()
@@ -34,9 +36,32 @@ def detect_scenes(video_path: str | Path, cfg: dict | None = None) -> dict:
 
     duration = probe(video_path)["duration"]
     try:
-        from scenedetect import ContentDetector, detect
-        raw = detect(str(video_path), ContentDetector(threshold=27.0),
-                     show_progress=False)
+        from scenedetect import ContentDetector, SceneManager, open_video
+        video = open_video(str(video_path))
+        total_frames = video.duration.frame_num if video.duration else 0
+        sm = SceneManager()
+        threshold = float(cfg.get("scenes", {}).get("threshold", 27.0)) if cfg else 27.0
+        sm.add_detector(ContentDetector(threshold=threshold))
+
+        last_update = 0.0
+
+        def _on_frame(image, frame_timecode):
+            nonlocal last_update
+            if cancel is not None and cancel.is_set():
+                sm.stop()
+                raise JobCancelled("cancelled by user")
+            now = time.monotonic()
+            if progress_cb and total_frames > 0 and (now - last_update) >= 0.75:
+                last_update = now
+                frac = min(1.0, max(0.0, frame_timecode.frame_num / total_frames))
+                progress_cb(frac, f"detecting shots {int(frac * 100)}%")
+
+        sm.detect_scenes(video, callback=_on_frame)
+        if cancel is not None and cancel.is_set():
+            raise JobCancelled("cancelled by user")
+        raw = sm.get_scene_list()
+    except JobCancelled:
+        raise
     except Exception as e:  # noqa: BLE001
         raise SceneError("PySceneDetect failed", detail=str(e)[:500]) from e
 

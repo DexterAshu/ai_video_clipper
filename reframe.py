@@ -169,8 +169,9 @@ class SubjectTracker:
         self.frames_since_face = 0
 
     def update(self, faces_data: list[tuple[float, float, float, float, float, float]],
-               frame_idx: int) -> dict | None:
-        """faces_data: list of (cx, cy, fw, fh, conf, mouth_open)."""
+               frame_idx: int, audio_active: bool = True) -> dict | None:
+        """faces_data: list of (cx, cy, fw, fh, conf, mouth_open).
+        audio_active: synchronized speech activity indicator for the current frame."""
         if not faces_data:
             self.frames_since_face += 1
             # Dynamic sampling-aware face disappearance recovery: hold track up to 1.6s
@@ -257,7 +258,7 @@ class SubjectTracker:
                     "last_frame": frame_idx
                 }
 
-        # score tracks based on normalized area + syllabic mouth dynamics (filtering laughter/smiling)
+        # score tracks based on normalized area + syllabic mouth dynamics + audio correlation
         scored = []
         for tid, t in self.tracks.items():
             hist = self.mouth_hist[tid]
@@ -269,27 +270,44 @@ class SubjectTracker:
             # Syllabic speech has rhythmic variation between consonants and vowels.
             # Static wide-open laughing/smiling listeners (sustained high mean with near-zero var across 4+ frames) are penalized.
             if has_history and mean_open > 0.45 and var < 0.003:
-                speech_boost = 0.6  # sustained laughing/smiling listener discount
+                speech_boost = 0.5  # sustained laughing/smiling listener discount
             elif has_history:
                 speech_boost = 1.0 + 4.5 * min(var * 100.0, 2.0)
             else:
                 # Initial frames before history accumulates: use instantaneous mouth openness
                 speech_boost = 1.0 + 3.0 * min(latest * 2.0, 2.0)
 
+            # Audio-visual evidence correlation:
+            # During audio silence or background pauses, mouth movements (chewing, smiling, laughing)
+            # are NOT vocal speech. Heavily discount to prevent silent listeners from stealing the frame.
+            if not audio_active:
+                speech_boost *= 0.35
+            else:
+                # Audio is active: speech-like syllabic variation receives an extra confidence boost
+                if var >= 0.003:
+                    speech_boost *= 1.25
+
             # Area normalization: use square-root of area so proximity doesn't drown active background speakers
             norm_dim = math.sqrt(max(10.0, t["w"] * t["h"]))
             score = norm_dim * speech_boost
+            confidence = min(1.0, max(0.1, (score / max(1.0, norm_dim)) * (1.0 if audio_active else 0.6)))
+            t["speaker_confidence"] = confidence
             scored.append((tid, score, t))
 
         scored.sort(key=lambda x: x[1], reverse=True)
         top_tid, top_score, top_t = scored[0]
 
-        # hysteresis / stickiness: responsive switching without erratic jitter
+        # hysteresis / stickiness: responsive switching without erratic jitter.
+        # CRITICAL: Speaker switching requires active audio evidence (cannot switch during a pause).
         if self.active_id in self.tracks:
             curr_score = next((s for tid, s, _ in scored if tid == self.active_id), 0.0)
-            if top_tid != self.active_id and top_score > curr_score * 1.35:
+            curr_hist = self.mouth_hist.get(self.active_id, [])
+            curr_is_laughter = len(curr_hist) >= 4 and float(np.mean(curr_hist)) > 0.45 and float(np.var(curr_hist)) < 0.003
+            needed_dwell = max(2, self.dwell_threshold // 2) if curr_is_laughter else self.dwell_threshold
+
+            if audio_active and top_tid != self.active_id and top_score > curr_score * 1.35:
                 self.active_dwell += 1
-                if self.active_dwell > self.dwell_threshold:  # time-scaled hold (~0.5s)
+                if self.active_dwell >= needed_dwell:  # time-scaled hold (~0.3-0.5s)
                     self.active_id = top_tid
                     self.active_dwell = 0
             else:
@@ -301,6 +319,8 @@ class SubjectTracker:
         res = dict(self.tracks[self.active_id])
         res["multi_person"] = False
         res["num_faces"] = len(faces_data)
+        res["active_id"] = self.active_id
+        res["speaker_confidence"] = res.get("speaker_confidence", 0.8)
         if primary_face:
             res["primary_face"] = primary_face
             res["secondary_face"] = secondary_face
@@ -308,9 +328,10 @@ class SubjectTracker:
 
 
 def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
-                  every: int | None = None) -> tuple[list[dict | None], dict]:
+                  every: int | None = None,
+                  audio_activity: np.ndarray | None = None) -> tuple[list[dict | None], dict]:
     """Sampled targets: returns list of target dicts:
-       {'cx': float, 'cy': float, 'fw': float, 'fh': float, 'kind': str}
+       {'cx': float, 'cy': float, 'fw': float, 'fh': float, 'kind': str, ...}
        or None when no target found."""
     import cv2
     import mediapipe as mp
@@ -362,14 +383,23 @@ def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
                         closest_m = min(m_map.items(), key=lambda x: abs(x[0] - cx))[1]
                     faces_data.append((cx, cy, fw, fh, float(d.score[0]), closest_m))
 
-            active_t = tracker.update(faces_data, idx)
+            is_audio_active = bool(audio_activity[idx]) if (audio_activity is not None and idx < len(audio_activity)) else True
+            active_t = tracker.update(faces_data, idx, audio_active=is_audio_active)
             if active_t is not None:
                 targets.append({
                     "cx": float(active_t["cx"]),
                     "cy": float(active_t["cy"]),
-                    "fw": float(active_t["w"]),
-                    "fh": float(active_t["h"]),
-                    "kind": "face"
+                    "w": float(active_t.get("w", active_t.get("fw", 0.0))),
+                    "h": float(active_t.get("h", active_t.get("fh", 0.0))),
+                    "fw": float(active_t.get("w", active_t.get("fw", 0.0))),
+                    "fh": float(active_t.get("h", active_t.get("fh", 0.0))),
+                    "kind": "face",
+                    "num_faces": int(active_t.get("num_faces", 1)),
+                    "multi_person": bool(active_t.get("multi_person", False)),
+                    "primary_face": active_t.get("primary_face") or {},
+                    "secondary_face": active_t.get("secondary_face") or {},
+                    "speaker_confidence": float(active_t.get("speaker_confidence", 1.0)),
+                    "active_id": active_t.get("active_id", 0),
                 })
                 kinds.append("face")
                 stats["face"] += 1
@@ -392,7 +422,131 @@ def track_targets(clip_path: Path, rcfg: dict, w: int, h: int,
             idx += 1
     cap.release()
     stats["kinds"] = kinds
+    stats["tracks"] = {tid: dict(t) for tid, t in tracker.tracks.items()}
     return targets, stats
+
+
+def extract_audio_activity(source: str | Path, start: float, dur: float,
+                           target_fps: float = 12.0, sample_rate: int = 16000) -> np.ndarray:
+    """Extract audio speech activity timeline (boolean speech active per video frame)
+    using short-time RMS energy, adaptive dynamic range thresholding, and temporal hangover smoothing."""
+    import subprocess
+    from ffutil import ffmpeg_bin
+
+    n_frames = max(1, int(round(dur * target_fps)))
+    cmd = [
+        ffmpeg_bin(), "-v", "error",
+        "-ss", f"{start:.3f}", "-i", str(source), "-t", f"{dur:.3f}",
+        "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-"
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=30)
+        if proc.returncode != 0 or not proc.stdout:
+            return np.ones(n_frames, dtype=bool)
+
+        audio = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        if len(audio) < 100:
+            return np.ones(n_frames, dtype=bool)
+
+        win_size = int(sample_rate * 0.030)  # 30ms window
+        hop_size = int(sample_rate / target_fps)
+
+        rms_vals = np.zeros(n_frames, dtype=np.float32)
+        for i in range(n_frames):
+            center = int(i * hop_size)
+            w0 = max(0, center - win_size // 2)
+            w1 = min(len(audio), center + win_size // 2)
+            chunk = audio[w0:w1]
+            if len(chunk) > 0:
+                rms_vals[i] = float(np.sqrt(np.mean(chunk * chunk)))
+
+        eps = 1e-5
+        dbfs = 20.0 * np.log10(np.maximum(rms_vals, eps))
+
+        db_min = float(np.min(dbfs))
+        db_max = float(np.max(dbfs))
+        db_range = db_max - db_min
+
+        if db_range > 7.0:
+            # Contrast exists between speech and pauses
+            baseline = float(np.percentile(dbfs, 25))
+            threshold = baseline + 0.25 * (db_max - baseline)
+        else:
+            # Low dynamic range (continuous audio / background music)
+            threshold = -42.0
+
+        raw_mask = dbfs > threshold
+
+        # Temporal hangover smoothing: bridge short 1-2 frame inter-word pauses (~100-160ms)
+        smoothed = np.copy(raw_mask)
+        for i in range(1, len(smoothed) - 1):
+            if not smoothed[i] and smoothed[i - 1] and smoothed[i + 1]:
+                smoothed[i] = True
+        return smoothed
+    except Exception as e:
+        log.warning("audio activity extraction failed (%s) - defaulting to speech active", e)
+        return np.ones(n_frames, dtype=bool)
+
+
+def _scale_target_dict(t: dict, sx: float, sy: float) -> dict:
+    if not t:
+        return {}
+    out = dict(t)
+    for k in ("cx", "fw", "w"):
+        if k in out and out[k] is not None:
+            out[k] = float(out[k]) * sx
+    for k in ("cy", "fh", "h"):
+        if k in out and out[k] is not None:
+            out[k] = float(out[k]) * sy
+    if "primary_face" in out and isinstance(out["primary_face"], dict):
+        out["primary_face"] = _scale_target_dict(out["primary_face"], sx, sy)
+    if "secondary_face" in out and isinstance(out["secondary_face"], dict):
+        out["secondary_face"] = _scale_target_dict(out["secondary_face"], sx, sy)
+    return out
+
+
+def analyze_clip_for_director(source: Path | str, start: float, dur: float,
+                              cfg: dict | None = None) -> tuple[list[dict | None], dict[int, list[dict]], dict]:
+    """Extract per-frame targets, active face tracks, and audio-visual speech activity for dynamic directing.
+    Returns (raw_targets, face_tracks, stats) properly scaled to source video resolution."""
+    cfg = cfg or load_config()
+    rcfg = cfg.get("reframe", {})
+    source = Path(source)
+    proxy_h = int(rcfg.get("proxy_height", 360))
+    proxy_fps = float(rcfg.get("proxy_fps", 12))
+
+    src_info = probe(source)
+    sw = int(src_info["width"])
+    sh = int(src_info["height"])
+
+    proxy_path = source.parent / f"_proxy_dir_{source.stem}_{int(start * 100)}.mp4"
+    try:
+        _build_proxy(source, start, dur, proxy_path, proxy_h, proxy_fps)
+        pinfo = probe(proxy_path)
+        pw, ph = int(pinfo["width"]), int(pinfo["height"])
+        scale_x = sw / max(pw, 1)
+        scale_y = sh / max(ph, 1)
+
+        # Extract audio activity
+        audio_act = extract_audio_activity(source, start, dur, target_fps=proxy_fps)
+        targets, stats = track_targets(proxy_path, rcfg, pw, ph, every=1, audio_activity=audio_act)
+        tracks = stats.get("tracks", {})
+
+        scaled_targets = [_scale_target_dict(t, scale_x, scale_y) if t else t for t in targets]
+        scaled_tracks = {}
+        for tid, tr in tracks.items():
+            strack = dict(tr)
+            for k in ("mean_cx", "mean_fw"):
+                if k in strack and strack[k] is not None:
+                    strack[k] = float(strack[k]) * scale_x
+            for k in ("mean_cy", "mean_fh"):
+                if k in strack and strack[k] is not None:
+                    strack[k] = float(strack[k]) * scale_y
+            scaled_tracks[tid] = strack
+
+        return scaled_targets, scaled_tracks, stats
+    finally:
+        proxy_path.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------- main entry
@@ -476,7 +630,8 @@ def reframe_clip(source: str | Path, start: float, end: float,
             _build_proxy(source, start, dur, proxy, proxy_h, proxy_fps)
             pinfo = probe(proxy)
             pw, ph = int(pinfo["width"]), int(pinfo["height"])
-            raw_targets, stats = track_targets(proxy, rcfg, pw, ph, every=1)
+            audio_act = extract_audio_activity(source, start, dur, target_fps=proxy_fps)
+            raw_targets, stats = track_targets(proxy, rcfg, pw, ph, every=1, audio_activity=audio_act)
         except Exception as e:
             log.warning("tracking failed (%s) - center crop with headroom", e)
             raw_targets, stats, pw, ph = [], {"face": 0, "motion": 0, "center": 1}, w, h

@@ -169,6 +169,25 @@ def test_hinglish_preserves_english_loanwords():
     assert out[4]["end"] == 2.2
 
 
+def test_caption_sanitization_removes_cjk_and_replacement_symbols():
+    """Verify hallucinated CJK symbols, Hangul, and Unicode replacement chars are stripped."""
+    words = [
+        {"word": "\ufffd\u5473", "start": 0.0, "end": 0.5},
+        {"word": "सीं।", "start": 0.5, "end": 1.0},
+        {"word": "\ufffd\u53ea", "start": 1.0, "end": 1.5},
+        {"word": "comedy", "start": 1.5, "end": 2.0},
+        {"word": "근데", "start": 2.0, "end": 2.5},
+    ]
+    out = caption_lang.process_caption_language(words, "hinglish")
+    tokens = [w["word"] for w in out]
+    # The pure garbage tokens should be completely dropped
+    assert "\ufffd" not in " ".join(tokens)
+    assert "\u5473" not in " ".join(tokens)
+    assert "근데" not in " ".join(tokens)
+    assert len(tokens) == 2
+    assert "comedy" in tokens
+
+
 # =====================================================================
 # 4. Metadata Deduplication & Prompt Leak Guard Tests
 # =====================================================================
@@ -214,4 +233,49 @@ def test_classification_prevents_metadata_hijacking():
     meta = {"title": "Clip 4", "hashtags": ["#startup", "#business"]}
     niche = classify.rule_based_niche(text, meta["title"], meta["hashtags"])
     assert niche == "comedy"
+
+
+# =====================================================================
+# 6. Multi-Resolution / Arbitrary Video Geometry Tests
+# =====================================================================
+
+def test_director_arbitrary_resolutions():
+    """Verify director filter construction and span planning work across 360p, 720p, 1080p, and 4K."""
+    resolutions = [
+        (640, 360),    # 360p
+        (1280, 720),   # 720p
+        (1920, 1080),  # 1080p
+        (3840, 2160),  # 4K
+    ]
+
+    for sw, sh in resolutions:
+        # 1. Test 2-person span calculation adapts dynamically
+        crop_w_916 = int(sh * 9 / 16)
+        comfortable_span = int(crop_w_916 * 0.8)
+        too_wide_span = int(crop_w_916 * 1.2)
+
+        # Comfortable 2-shot fits inside single crop
+        t_comfortable = [
+            {"num_faces": 2, "multi_person": True, "w": comfortable_span, "cx": sw / 2, "cy": sh / 2,
+             "primary_face": {"cx": sw * 0.45, "cy": sh * 0.5}, "secondary_face": {"cx": sw * 0.55, "cy": sh * 0.5}}
+        ]
+        plan_close = director.plan_clip_layouts(t_comfortable, {0: []}, duration_s=5.0, sw=sw, sh=sh)
+        assert plan_close[0].layout == director.LAYOUT_TWO_PERSON
+
+        # Far-apart 2-shot adapts to Top-Bottom split
+        t_far = [
+            {"num_faces": 2, "multi_person": True, "w": too_wide_span, "cx": sw / 2, "cy": sh / 2,
+             "primary_face": {"cx": sw * 0.25, "cy": sh * 0.5}, "secondary_face": {"cx": sw * 0.75, "cy": sh * 0.5}}
+        ]
+        plan_far = director.plan_clip_layouts(t_far, {0: []}, duration_s=5.0, sw=sw, sh=sh)
+        assert plan_far[0].layout == director.LAYOUT_SPLIT_TB
+
+        # 2. Test FFmpeg filter construction produces valid, strictly bounded syntax for all layouts
+        seg = plan_close[0]
+        for lay in (director.LAYOUT_FULL, director.LAYOUT_SPLIT_TB, director.LAYOUT_SPLIT_LR, director.LAYOUT_WIDE, director.LAYOUT_TWO_PERSON):
+            seg.layout = lay
+            filt = director._build_segment_filter(seg, sw, sh, ow=1080, oh=1920)
+            assert filt is not None and len(filt) > 0
+            assert "1080" in filt or "scale=" in filt
+
 

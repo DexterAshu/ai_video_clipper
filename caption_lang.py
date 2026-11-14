@@ -95,9 +95,20 @@ _NUKTA_CONSONANTS = {
 }
 
 
+def sanitize_caption_token(token: str) -> str:
+    """Strip Unicode replacement chars (\ufffd) and hallucinated East Asian CJK/Hangul
+    symbols that lower-parameter Whisper models sometimes emit."""
+    if not token:
+        return ""
+    # Strip replacement char, CJK, Hangul, Hiragana, Katakana
+    cleaned = re.sub(r'[\ufffd\u4e00-\u9fff\uac00-\ud7af\u3040-\u30ff]+', '', token)
+    return cleaned.strip()
+
+
 def transliterate_devanagari_word(word: str) -> str:
     """Phonetically transliterate a single Devanagari word into conversational Hinglish.
     Preserves surrounding punctuation and leaves Latin tokens untouched."""
+    word = sanitize_caption_token(word)
     if not word or not has_devanagari(word):
         return word
 
@@ -250,7 +261,7 @@ def translate_segment_text(text: str, target_lang: str, cfg: dict | None = None,
 
         if prov == "ollama":
             import llm_manager
-            resp = llm_manager.query_ollama(prompt, cfg=cfg, timeout_seconds=90)
+            resp = llm_manager.query_ollama(prompt, cfg=cfg, timeout=90.0)
             if resp:
                 resp = re.sub(r'^["\']|["\']$', '', resp.strip()).strip()
                 if resp:
@@ -327,6 +338,8 @@ def process_caption_language(words: list[dict], target_lang: str = DEFAULT_LANGU
         for w in words:
             token = w.get("word", "")
             converted = transliterate_devanagari_word(token)
+            if not converted:
+                continue
             out_words.append({
                 "start": w["start"],
                 "end": w["end"],
@@ -334,9 +347,15 @@ def process_caption_language(words: list[dict], target_lang: str = DEFAULT_LANGU
             })
         return out_words
 
-    # If Hindi is requested and text is already Devanagari, return as is
+    # If Hindi is requested and text is already Devanagari, return sanitized
     if target_lang == "hindi":
-        return words
+        out_words = []
+        for w in words:
+            cleaned = sanitize_caption_token(w.get("word", ""))
+            if not cleaned:
+                continue
+            out_words.append({**w, "word": cleaned})
+        return out_words
 
     # For English: group words into clauses and translate
     clauses: list[list[dict]] = []

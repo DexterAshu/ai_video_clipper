@@ -42,6 +42,10 @@ class RunHandle:
 
     def snapshot(self) -> dict | None:
         with self.lock:
+            if self.tracker and self.state == "running":
+                snap = label_snapshot(self.tracker.snapshot())
+                self.last_snapshot = snap
+                return snap
             return self.last_snapshot
 
     # -- subscriber management (called from the event loop thread) ----------

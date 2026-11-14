@@ -23,6 +23,7 @@ class RerenderRequest(BaseModel):
     preset: str | None = None
     style_refine: bool | None = None
     subs_mode: str | None = None
+    framing_mode: str | None = None
 
 
 @router.post("/api/jobs/{job_name}/clips/{index}/rerender")
@@ -33,6 +34,21 @@ def rerender(job_name: str, index: int, req: RerenderRequest):
     job_dir = safe_job_path(job_name)
     if not (job_dir / "job.json").exists():
         raise HTTPException(404, "That run's files can't be found.")
+
+    # Persist framing_mode to edit_plan.json if specified in rerender request
+    if req.framing_mode:
+        clip_dir = job_dir / f"clip_{index:02d}"
+        if clip_dir.exists():
+            plan_path = clip_dir / "edit_plan.json"
+            cur_plan = {}
+            if plan_path.exists():
+                try:
+                    cur_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            cur_plan["framing_mode"] = req.framing_mode
+            plan_path.write_text(json.dumps(cur_plan, indent=2, ensure_ascii=False), encoding="utf-8")
+
     handle = jobs.create(f"rr_{uuid.uuid4().hex[:8]}")
 
     def work(h: jobs.RunHandle) -> None:

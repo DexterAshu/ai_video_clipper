@@ -1,4 +1,5 @@
 """ETA math for progress tracking (Feature 1, overnight run)."""
+import time
 import progress
 
 
@@ -25,6 +26,37 @@ def test_estimate_eta_live_and_history_blend():
 def test_estimate_eta_no_signal_and_done():
     assert progress.estimate_eta(60, live_rate=None, history_rates=None) is None
     assert progress.estimate_eta(0, live_rate=5.0) == 0.0
+
+
+def test_progress_tracker_overall_eta_countdown():
+    tracker = progress.ProgressTracker()
+    assert tracker.overall_eta() is None  # 0% frac <= 0.03
+
+    # Fast forward tracker by faking start time
+    tracker._t0 = time.monotonic() - 10.0
+    # Simulate 50% completion
+    tracker.update("render", 1.0)  # render weight is 0.39, overall > 0.03
+    eta1 = tracker.overall_eta()
+    assert eta1 is not None and eta1 > 0
+
+    # Wait a short duration without updating fraction: ETA should count down
+    time.sleep(0.05)
+    eta2 = tracker.overall_eta()
+    assert eta2 is not None
+    assert eta2 < eta1
+
+
+def test_scene_detection_cancellation():
+    import threading
+    from errors import JobCancelled
+    from scenes import detect_scenes
+    cancel = threading.Event()
+    cancel.set()
+    try:
+        detect_scenes("samples/sample.mp4", cancel=cancel)
+        assert False, "Should have raised JobCancelled"
+    except JobCancelled:
+        pass
 
 
 if __name__ == "__main__":

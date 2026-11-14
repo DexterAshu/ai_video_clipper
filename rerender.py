@@ -144,13 +144,64 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
     mus_vol = float(studio_plan.get("music_volume_db", -18.0))
     sp_enhance = bool(studio_plan.get("speech_enhance", True))
     framing_mode = studio_plan.get("framing_mode", "smart_director")
+    plan_file = clip_dir / "director_plan.json"
+    valid_director_modes = ("smart_director", "split_tb", "split_lr", "wide", "two_person", "full")
 
-    if aspect == "9:16" and framing_mode in ("split_tb", "split_lr", "wide"):
-        import director
-        seg = director.DirectorSegment(0.0, out_end - out_start, layout=framing_mode)
-        metrics = director.render_director_clip(info["video_path"], out_start, out_end,
-                                                [seg], clip_dir / "reframed.mp4", cfg)
-        src = clip_dir / "reframed.mp4"
+    if aspect == "9:16":
+        if framing_mode not in valid_director_modes and framing_mode != "legacy":
+            raise ValueError(f"Unsupported framing mode: '{framing_mode}'. Supported modes: {valid_director_modes}")
+
+        if framing_mode in valid_director_modes:
+            import director
+            try:
+                # If full mode has manual pan/tilt/zoom offsets from Studio, use reframe_clip with explicit offsets
+                if framing_mode == "full" and (crop_x_off != 0.0 or crop_y_off != 0.0 or man_zoom != 1.0):
+                    cuts_rel = [t - out_start for t in
+                                scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end)]
+                    metrics = reframe_mod.reframe_clip(
+                        info["video_path"], out_start, out_end, clip_dir / "reframed.mp4",
+                        cuts_rel, cfg, aspect=aspect,
+                        info=(info if out_start == start and out_end == end else None),
+                        bottom_exclusion_ratio=excl, h_bias_center=hbias,
+                        crop_x_offset=crop_x_off, crop_y_offset=crop_y_off, manual_zoom=man_zoom)
+                else:
+                    metrics = director.direct_and_render_clip(
+                        source=info["video_path"],
+                        clip_start=out_start,
+                        clip_end=out_end,
+                        out_path=clip_dir / "reframed.mp4",
+                        cfg=cfg,
+                        transcript=transcript,
+                        framing_mode=framing_mode,
+                        cached_plan_path=(plan_file if framing_mode == "smart_director" else None),
+                        crop_x_offset=crop_x_off,
+                        crop_y_offset=crop_y_off,
+                        manual_zoom=man_zoom
+                    )
+                src = clip_dir / "reframed.mp4"
+            except Exception as e:
+                log.warning("rerender with director failed (%s) - falling back to legacy reframe", e)
+                cuts_rel = [t - out_start for t in
+                            scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end)]
+                metrics = reframe_mod.reframe_clip(
+                    info["video_path"], out_start, out_end, clip_dir / "reframed.mp4",
+                    cuts_rel, cfg, aspect=aspect,
+                    info=(info if out_start == start and out_end == end else None),
+                    bottom_exclusion_ratio=excl, h_bias_center=hbias,
+                    crop_x_offset=crop_x_off, crop_y_offset=crop_y_off, manual_zoom=man_zoom)
+                metrics["fallback"] = True
+                src = clip_dir / "reframed.mp4"
+        else:
+            # legacy framing mode
+            cuts_rel = [t - out_start for t in
+                        scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end)]
+            metrics = reframe_mod.reframe_clip(
+                info["video_path"], out_start, out_end, clip_dir / "reframed.mp4",
+                cuts_rel, cfg, aspect=aspect,
+                info=(info if out_start == start and out_end == end else None),
+                bottom_exclusion_ratio=excl, h_bias_center=hbias,
+                crop_x_offset=crop_x_off, crop_y_offset=crop_y_off, manual_zoom=man_zoom)
+            src = clip_dir / "reframed.mp4"
     elif aspect == "16:9":
         cut_path = (cut_mod.cut_segments(info["video_path"], segments, clip_dir / "cut.mp4",
                                          cfg, speed_ramps=speed_ramps)

@@ -125,7 +125,10 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
             tracker.skip(name)
             return result
         tracker.start(name, label)
-        result = stages.run(name, fn)
+        try:
+            result = stages.run(name, fn)
+        finally:
+            _check_cancel()
         tracker.finish(name)
         return result
 
@@ -155,7 +158,12 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
 
         scene_data = _stage("scenes", "detecting shots",
                             lambda: scenes_mod.detect_scenes(
-                                info["video_path"], cfg))
+                                info["video_path"], cfg,
+                                cancel=cancel,
+                                progress_cb=lambda f, msg: (
+                                    _check_cancel(),
+                                    tracker.update("scenes", f, msg),
+                                )))
 
         # segment-first: shortlist the spans worth transcribing (long inputs)
         target = target_count or cfg["clips"]["max_candidates"]
@@ -184,9 +192,11 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
             "transcribe", "transcribing audio",
             lambda: transcribe_mod.transcribe(
                 info["audio_path"], cfg, spans=spans, debug_dir=debug_dir,
-                progress_cb=lambda f: tracker.update(
-                    "transcribe", f, f"transcribing {f * 100:.0f}%",
-                    current_file="audio.wav")))
+                progress_cb=lambda f: (
+                    _check_cancel(),
+                    tracker.update(
+                        "transcribe", f, f"transcribing {f * 100:.0f}%",
+                        current_file="audio.wav"))))
         if not transcript["sentences"]:
             notes.append("empty transcript — mechanical windows used "
                          "(passed mechanically; re-verify with a real sample)")
@@ -337,6 +347,10 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
                     events, caption_language=cap_lang): i
                     for i, cand in enumerate(candidates)}
                 for fut in as_completed(futures):
+                    if cancel is not None and cancel.is_set():
+                        for f in futures:
+                            f.cancel()
+                        raise JobCancelled("cancelled by user")
                     i = futures[fut]
                     done += 1
                     tracker.item("render", f"clip_{i:02d}", 1.0)
@@ -472,6 +486,65 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                 log.warning("could not scale 16:9 cut to 720p (%s) — keeping source res", e)
         source_for_captions, metrics = cut_path, {"aspect": "16:9",
                                                   "passthrough": True}
+    elif aspect == "9:16":
+        # Dynamic AI Director: intelligently selects Full-Screen, Split-Screen (TB/LR),
+        # Wide Context, or 2-Shot compositions based on multi-speaker visual/audio tracking.
+        framing_mode = (edit_plan.get("framing_mode") if edit_plan else None) or \
+                       cfg.get("reframe", {}).get("framing_mode", "smart_director")
+        plan_file = clip_dir / "director_plan.json"
+        use_director = framing_mode in ("smart_director", "split_tb", "split_lr", "wide", "two_person", "full")
+        director_succeeded = False
+
+        if use_director:
+            try:
+                import director
+                if multi:
+                    cut_path = cut_mod.cut_segments(source, segments, clip_dir / "cut.mp4",
+                                                    cfg, speed_ramps=speed_ramps)
+                    cut_dur = reframe_mod.probe(cut_path)["duration"]
+                    metrics = director.direct_and_render_clip(
+                        source=cut_path, clip_start=0.0, clip_end=cut_dur,
+                        out_path=clip_dir / "reframed.mp4", cfg=cfg,
+                        transcript=transcript, framing_mode=framing_mode,
+                        cached_plan_path=plan_file
+                    )
+                else:
+                    metrics = director.direct_and_render_clip(
+                        source=source, clip_start=out_start, clip_end=out_end,
+                        out_path=clip_dir / "reframed.mp4", cfg=cfg,
+                        transcript=transcript, framing_mode=framing_mode,
+                        cached_plan_path=plan_file
+                    )
+                source_for_captions = clip_dir / "reframed.mp4"
+                director_succeeded = True
+            except Exception as dir_err:
+                log.warning("dynamic director rendering failed (%s) - falling back to legacy reframe", dir_err)
+                director_succeeded = False
+
+        if not director_succeeded:
+            if multi:
+                cut_path = cut_mod.cut_segments(source, segments, clip_dir / "cut.mp4",
+                                                cfg, speed_ramps=speed_ramps)
+                cut_dur = reframe_mod.probe(cut_path)["duration"]
+                metrics = reframe_mod.reframe_clip(
+                    cut_path, 0.0, cut_dur, clip_dir / "reframed.mp4", [], cfg,
+                    aspect=aspect, debug_dir=debug_dir, info=None,
+                    bottom_exclusion_ratio=excl, h_bias_center=hbias,
+                    event_cuts_rel=event_cuts_rel)
+                source_for_captions = clip_dir / "reframed.mp4"
+            else:
+                cuts_rel = [t - out_start for t in
+                            scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end)]
+                metrics = reframe_mod.reframe_clip(
+                    source, out_start, out_end, clip_dir / "reframed.mp4", cuts_rel, cfg,
+                    aspect=aspect, debug_dir=debug_dir,
+                    info=(info if out_start == cand["start"] and out_end == cand["end"] else None),
+                    bottom_exclusion_ratio=excl, h_bias_center=hbias,
+                    event_cuts_rel=event_cuts_rel)
+                source_for_captions = clip_dir / "reframed.mp4"
+            if use_director:
+                metrics["fallback"] = True
+                metrics["fallback_reason"] = "director planning or rendering failed"
     elif multi:
         # cut the multi-segment concat first, then reframe the contiguous file
         # (keeps a single reframe re-encode; scene resets omitted across joins)
@@ -514,6 +587,22 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                  for w in transcript["words"]
                  if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
         cap_kwargs = captions_mod.cta_from_cfg(cfg)
+
+    # On-demand clip transcription fallback: if segment-first skipped this span,
+    # transcribe the clip's audio slice so captions are NEVER missing.
+    if not words and cfg.get("captions", {}).get("enabled", True) and preset != "none":
+        try:
+            import transcribe as transcribe_mod
+            fresh_tr = transcribe_mod.transcribe(info["audio_path"], cfg, spans=[(out_start, out_end)])
+            if fresh_tr and fresh_tr.get("words"):
+                words = [{"word": w["word"],
+                          "start": round(max(0.0, w["start"] - out_start), 3),
+                          "end": round(max(0.0, w["end"] - out_start), 3)}
+                         for w in fresh_tr["words"]
+                         if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
+                log.info("clip %02d recovered %d words via on-demand transcribe", i, len(words))
+        except Exception as tr_err:
+            log.warning("on-demand clip transcribe fallback failed (%s)", tr_err)
 
     # Dynamic caption language: translate / transliterate words (e.g. Hindi, Hinglish, English)
     # preserving exact audio timestamps and karaoke pop

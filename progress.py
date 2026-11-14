@@ -151,6 +151,9 @@ class ProgressTracker:
         self._on_change = on_change
         self._t0 = time.monotonic()
         self._overall_hint: float | None = None
+        self._last_eta: float | None = None
+        self._last_eta_t: float = 0.0
+        self._last_eta_frac: float = 0.0
 
     # ---------------------------------------------------------- mutators
 
@@ -231,10 +234,25 @@ class ProgressTracker:
 
     def overall_eta(self) -> float | None:
         frac = self.overall_fraction()
-        if frac <= 0.03:
-            return None
-        el = time.monotonic() - self._t0
-        return max(0.0, el * (1.0 - frac) / frac)
+        with self._lock:
+            render_stage = self._stages.get("render")
+            # Early stages (setup, scene cuts) run fast and do not predict heavy multi-clip rendering time.
+            # Avoid emitting misleading 20-30s overall ETAs before heavy stages start.
+            if render_stage and render_stage.state == PENDING and frac < 0.25 and self._overall_hint is None:
+                return None
+            if frac <= 0.03 or frac >= 1.0:
+                return 0.0 if frac >= 1.0 else None
+            now = time.monotonic()
+            el = now - self._t0
+            # Re-anchor baseline rate when progress fraction advances meaningfully or upon first estimation
+            if self._last_eta is None or (frac - self._last_eta_frac) >= 0.01:
+                self._last_eta = max(0.0, el * (1.0 - frac) / frac) if frac < 1.0 else 0.0
+                self._last_eta_t = now
+                self._last_eta_frac = frac
+                return self._last_eta
+            # Between progress increments, count down remaining time smoothly with elapsed wall-clock seconds
+            dt = now - self._last_eta_t
+            return max(0.0, self._last_eta - dt)
 
     def snapshot(self) -> dict:
         """UI-ready structure: overall + per-stage rows (fresh timings)."""
