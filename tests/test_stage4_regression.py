@@ -178,7 +178,7 @@ def test_6_history_persistence():
     cfg = load_config()
     test_job_data = {
         "job_id": "test_hist_001",
-        "created": "2026-11-14T01:00:00",
+        "created": "2099-01-01T00:00:00",
         "source": "samples/sample.mp4",
         "status": "done",
         "settings": {"preset": "karaoke-pop"},

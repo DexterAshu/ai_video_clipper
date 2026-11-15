@@ -96,6 +96,8 @@ HIGHLIGHT_CANDIDATES = {
                     "hook": {"type": "string", "minLength": 1},
                     "reason": {"type": "string"},
                     "score": {"type": "number", "minimum": 0, "maximum": 10},
+                    "candidate_source": {"type": "string"},
+                    "is_synthetic": {"type": "boolean"},
                 },
                 "required": ["start", "end", "hook", "reason", "score"],
                 "additionalProperties": False,

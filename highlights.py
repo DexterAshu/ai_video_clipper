@@ -211,12 +211,21 @@ def event_cluster_candidates(events: list[dict], duration: float,
         if any(_overlap_frac((start, end), (k["start"], k["end"])) >= 0.4
                for k in out):
             continue
+        desc = str(e.get("description", "")).strip()
+        is_synth = (e.get("source") == "mock" or desc.lower().startswith("mock:"))
+        if is_synth or not desc or desc.lower().startswith("mock:"):
+            clean_hook = f"Notable {e.get('type', 'moment').replace('_', ' ')}"
+        else:
+            clean_hook = desc[:120]
+
         out.append({
             "start": round(start, 3), "end": round(end, 3),
-            "hook": e["description"][:120] or "A notable moment",
+            "hook": clean_hook,
             "reason": f"event-cluster: {len(cluster)} events, "
                       f"peak {e['type']} {e['intensity_1_10']:.0f}/10",
             "score": round(min(10.0, 4.0 + 0.5 * e["intensity_1_10"]), 2),
+            "candidate_source": "synthetic_event" if is_synth else "audio_event_cluster",
+            "is_synthetic": is_synth,
         })
     return out
 
@@ -246,7 +255,9 @@ def rule_based_candidates(windows: list[dict], cfg: dict) -> list[dict]:
                     "hook": first.strip()[:120] or "An interesting moment",
                     "reason": f"rule-based: {kw} hook keywords, "
                               f"{energy:.1f} words/sec",
-                    "score": score})
+                    "score": score,
+                    "candidate_source": "speech_energy_rule",
+                    "is_synthetic": False})
     return out
 
 
@@ -277,7 +288,8 @@ def select_highlights(transcript: dict, scenes: dict, duration: float,
 
     if mechanical:
         cands = [{"start": w["start"], "end": w["end"], "hook": w["text"],
-                  "reason": "mechanical window (no transcript)", "score": 5.0}
+                  "reason": "mechanical window (no transcript)", "score": 5.0,
+                  "candidate_source": "mechanical_window", "is_synthetic": False}
                  for w in windows]
     else:
         cands = _llm_or_fallback(windows, cfg, provider, min_s, max_s, max_n,
@@ -347,6 +359,14 @@ def _llm_or_fallback(windows, cfg, provider, min_s, max_s, max_n, debug_dir):
         cands = out["candidates"]
         if not cands:
             raise LLMError("LLM returned zero candidates")
+        for c in cands:
+            c.setdefault("candidate_source", "llm_transcript")
+            raw_hook = str(c.get("hook", "")).strip()
+            if raw_hook.lower().startswith("mock:"):
+                c["hook"] = raw_hook[5:].strip() or "A notable moment"
+                c["is_synthetic"] = True
+            else:
+                c.setdefault("is_synthetic", False)
         if debug_dir:
             (Path(debug_dir) / "highlight_llm_raw.json").write_text(
                 json.dumps(out, indent=2), encoding="utf-8")
@@ -422,6 +442,50 @@ def _safe_num(val: Any, default: float = 5.0, min_v: float = 0.0, max_v: float =
         return default
 
 
+def normalize_virality_score(val: Any, scale: str | None = None) -> float:
+    """Normalize virality score strictly onto canonical 0.0 - 10.0 scale.
+    - If val is dict (e.g. {"score": 85.0}), extract score.
+    - If val is 0 - 100 (standard virality.py schema): divide by 10.0.
+    - If val is already 0.0 - 10.0: keep it unchanged.
+    - Never double-normalizes (e.g. 8.5 stays 8.5).
+    """
+    if val is None:
+        return 5.0
+    if isinstance(val, dict):
+        val = val.get("score", 50.0)
+    safe_v = _safe_num(val, default=50.0, min_v=0.0, max_v=100.0)
+    if scale == "0_10":
+        return round(min(10.0, max(0.0, safe_v)), 3)
+    if scale == "0_100" or safe_v > 10.0:
+        return round(min(10.0, max(0.0, safe_v / 10.0)), 3)
+    return round(min(10.0, max(0.0, safe_v)), 3)
+
+
+def compute_composite_score(
+    llm_score: float,
+    virality_score: float,
+    candidate_score: float,
+    weights: dict | None = None
+) -> float:
+    """Authoritative composite score calculation.
+    Formula: (w_llm * S_llm + w_vir * S_vir + w_cand * S_cand) / (w_llm + w_vir + w_cand)
+    All components on canonical 0.0 - 10.0 scale.
+    Defaults: 60% LLM, 25% virality, 15% candidate.
+    """
+    weights = weights or {}
+    w_llm = float(weights.get("llm", 0.60))
+    w_vir = float(weights.get("virality", 0.25))
+    w_cand = float(weights.get("candidate", 0.15))
+    w_sum = max(1e-6, w_llm + w_vir + w_cand)
+
+    s_llm = _safe_num(llm_score, default=5.0, min_v=0.0, max_v=10.0)
+    s_vir = _safe_num(virality_score, default=5.0, min_v=0.0, max_v=10.0)
+    s_cand = _safe_num(candidate_score, default=5.0, min_v=0.0, max_v=10.0)
+
+    composite = (w_llm * s_llm + w_vir * s_vir + w_cand * s_cand) / w_sum
+    return round(min(10.0, max(0.0, composite)), 3)
+
+
 def rescore_clips(clips: list[dict], transcript: dict,
                   cfg: dict | None = None, provider: str | None = None,
                   target_count: int | None = None) -> list[dict]:
@@ -435,7 +499,14 @@ def rescore_clips(clips: list[dict], transcript: dict,
 
     # Phase 1: Candidate Eligibility Audit
     for clip in clips:
-        dur = float(clip.get("duration") or max(0.0, clip.get("end", 0.0) - clip.get("start", 0.0)))
+        start_s = _safe_num(clip.get("start"), default=0.0, min_v=0.0, max_v=86400.0)
+        end_s = _safe_num(clip.get("end"), default=0.0, min_v=start_s, max_v=86400.0)
+        raw_dur = clip.get("duration")
+        if raw_dur is not None:
+            dur = _safe_num(raw_dur, default=max(0.0, end_s - start_s), min_v=0.0, max_v=86400.0)
+        else:
+            dur = max(0.0, end_s - start_s)
+
         rejection_reasons: list[str] = []
         is_eligible = True
 
@@ -473,20 +544,19 @@ def rescore_clips(clips: list[dict], transcript: dict,
         clip["transcript_status"] = transcript_status
 
         # Composite normalization: incorporate virality and candidate signals safely
-        vir_obj = clip.get("virality") or {}
-        vir_raw = _safe_num(vir_obj.get("score"), default=50.0, min_v=0.0, max_v=100.0)
-        vir_norm = round(min(10.0, max(1.0, vir_raw / 10.0)), 3)
+        vir_norm = normalize_virality_score(clip.get("virality"))
 
         cand_raw = _safe_num(clip.get("candidate_score"), default=5.0, min_v=0.0, max_v=100.0)
         cand_norm = round(cand_raw / 10.0, 3) if cand_raw > 10.0 else round(cand_raw, 3)
         cand_norm = min(10.0, max(0.0, cand_norm))
 
+        clip_id_display = str(clip.get("index", "?"))
         if not clip["eligible"]:
             clip["scores"] = {"hook_strength": 0.0, "retention": 0.0, "clarity": 0.0, "impact": 0.0}
             clip["weighted_score"] = 0.0
             clip["assessment_status"] = "not_assessed"
             clip["normalized_components"] = {"llm": 0.0, "virality": 0.0, "candidate": 0.0}
-            log.info("clip %02d [INELIGIBLE]: %s", clip["index"], ", ".join(clip["rejection_reasons"]))
+            log.info("clip %s [INELIGIBLE]: %s", clip_id_display, ", ".join(clip["rejection_reasons"]))
             continue
 
         if transcript_status == "missing":
@@ -512,17 +582,22 @@ def rescore_clips(clips: list[dict], transcript: dict,
                 llm_score = sum(clean_scores[k] * weights[k] for k in weights)
                 clip["assessment_status"] = "completed"
             except LLMError as e:
-                log.warning("rescore failed for clip %02d (%s) — transparent fallback",
-                            clip["index"], e)
+                log.warning("rescore failed for clip %s (%s) — transparent fallback",
+                            clip_id_display, e)
                 fb_val = min(7.0, max(2.0, round(0.6 * cand_norm + 0.4 * vir_norm, 2)))
                 clip["scores"] = {k: fb_val for k in ("hook_strength", "retention", "clarity", "impact")}
                 llm_score = fb_val
                 clip["assessment_status"] = "fallback"
 
-        composite_score = round(0.60 * llm_score + 0.25 * vir_norm + 0.15 * cand_norm, 3)
+        llm_norm = round(llm_score, 3)
+
+        # Configurable composite scoring weights (defaults: 60% LLM, 25% virality, 15% candidate)
+        comp_weights = cfg.get("clips", {}).get("composite_weights", {})
+        composite_score = compute_composite_score(llm_norm, vir_norm, cand_norm, comp_weights)
+
         clip["weighted_score"] = composite_score
         clip["normalized_components"] = {
-            "llm": round(llm_score, 3),
+            "llm": llm_norm,
             "virality": vir_norm,
             "candidate": cand_norm
         }
@@ -532,14 +607,17 @@ def rescore_clips(clips: list[dict], transcript: dict,
     ineligible_clips = [c for c in clips if not c["eligible"]]
 
     def _ranking_key(c: dict):
-        vir_s = _safe_num((c.get("virality") or {}).get("score"), default=0.0, min_v=0.0, max_v=100.0)
-        cand_s = _safe_num(c.get("candidate_score"), default=0.0, min_v=0.0, max_v=100.0)
+        norm = c.get("normalized_components", {})
+        vir_s = _safe_num(norm.get("virality"), default=0.0, min_v=0.0, max_v=10.0)
+        cand_s = _safe_num(norm.get("candidate"), default=0.0, min_v=0.0, max_v=10.0)
+        dur_s = _safe_num(c.get("duration"), default=30.0, min_v=0.0, max_v=7200.0)
+        idx_s = _safe_num(c.get("index"), default=0.0, min_v=-1e9, max_v=1e9)
         return (
             _safe_num(c.get("weighted_score"), default=0.0, min_v=0.0, max_v=10.0),
             vir_s,
             cand_s,
-            -abs(float(c.get("duration", 30.0)) - 35.0),  # Sweet-spot proximity
-            -int(c.get("index", 0))                      # Stable tie-break
+            -abs(dur_s - 35.0),  # Sweet-spot proximity
+            -int(idx_s)          # Stable tie-break
         )
 
     eligible_clips.sort(key=_ranking_key, reverse=True)
@@ -551,6 +629,12 @@ def rescore_clips(clips: list[dict], transcript: dict,
         keep_target = max(min(cfg["clips"]["min_keep"], n_eligible),
                           math.ceil(n_eligible * cfg["clips"]["keep_ratio"]))
 
+    comp_weights = cfg.get("clips", {}).get("composite_weights", {})
+    w_llm = float(comp_weights.get("llm", 0.60))
+    w_vir = float(comp_weights.get("virality", 0.25))
+    w_cand = float(comp_weights.get("candidate", 0.15))
+    w_sum = max(1e-6, w_llm + w_vir + w_cand)
+
     for rank_idx, c in enumerate(eligible_clips):
         c["rank"] = rank_idx + 1
         c["kept"] = rank_idx < keep_target
@@ -558,8 +642,12 @@ def rescore_clips(clips: list[dict], transcript: dict,
             c["rejection_reasons"].append(f"dropped_by_quota: rank {c['rank']} exceeds target {keep_target}")
 
         verdict = "selected" if c["kept"] else f"dropped_by_quota: rank {c['rank']} exceeds target {keep_target}"
+        dur_val = float(c.get("duration") or 0.0)
+        duration_suitability = round(max(0.0, min(10.0, 10.0 - abs(dur_val - 35.0) * 0.3)), 2)
+        c_id = c.get("index") if c.get("index") is not None else (rank_idx + 1)
+        llm_val = c.get("normalized_components", {}).get("llm", 0.0)
         c["ranking"] = {
-            "candidate_id": c["index"],
+            "candidate_id": c_id,
             "original_start": c.get("original_source_start_s", c.get("start")),
             "original_end": c.get("original_source_end_s", c.get("end")),
             "start": c.get("start"),
@@ -571,19 +659,40 @@ def rescore_clips(clips: list[dict], transcript: dict,
             "assessment_status": c.get("assessment_status", "completed"),
             "breakdown": c["scores"],
             "normalized_components": c.get("normalized_components", {}),
+            "candidate_score": c.get("normalized_components", {}).get("candidate", 0.0),
+            "virality_score": c.get("normalized_components", {}).get("virality", 0.0),
+            "llm_assessment_score": llm_val,
+            "content_quality_score": llm_val,
+            "clarity_score": c.get("scores", {}).get("clarity", 0.0),
+            "hook_quality": c.get("scores", {}).get("hook_strength", 0.0),
+            "retention_score": c.get("scores", {}).get("retention", 0.0),
+            "impact_score": c.get("scores", {}).get("impact", 0.0),
+            "duration_suitability": duration_suitability,
             "composite_score": c["weighted_score"],
+            "final_weighted_score": c["weighted_score"],
+            "weights_used": {
+                "llm": round(w_llm / w_sum, 4),
+                "virality": round(w_vir / w_sum, 4),
+                "candidate": round(w_cand / w_sum, 4),
+                "llm_subscores": weights,
+            },
+            "candidate_source": c.get("candidate_source", "heuristic"),
+            "transcript_source": c.get("transcript_source", "whisper"),
+            "assessment_source": c.get("assessment_source", provider or "ollama"),
+            "is_synthetic": bool(c.get("is_synthetic", False)),
             "rank": c["rank"],
             "kept": c["kept"],
             "verdict_reason": verdict,
         }
-        log.info("clip %02d [RANK %d | score=%.2f | kept=%s]: %s",
-                 c["index"], c["rank"], c["weighted_score"], c["kept"], c.get("hook", ""))
+        log.info("clip %s [RANK %d | score=%.2f | kept=%s]: %s",
+                 str(c_id), c["rank"], c["weighted_score"], c["kept"], c.get("hook", ""))
 
     for c in ineligible_clips:
         c["rank"] = None
         c["kept"] = False
+        c_id = c.get("index") if c.get("index") is not None else "?"
         c["ranking"] = {
-            "candidate_id": c["index"],
+            "candidate_id": c_id,
             "original_start": c.get("original_source_start_s", c.get("start")),
             "original_end": c.get("original_source_end_s", c.get("end")),
             "start": c.get("start"),
@@ -595,7 +704,27 @@ def rescore_clips(clips: list[dict], transcript: dict,
             "assessment_status": "not_assessed",
             "breakdown": c.get("scores", {}),
             "normalized_components": {"llm": 0.0, "virality": 0.0, "candidate": 0.0},
+            "candidate_score": 0.0,
+            "virality_score": 0.0,
+            "llm_assessment_score": 0.0,
+            "content_quality_score": 0.0,
+            "clarity_score": 0.0,
+            "hook_quality": 0.0,
+            "retention_score": 0.0,
+            "impact_score": 0.0,
+            "duration_suitability": 0.0,
             "composite_score": 0.0,
+            "final_weighted_score": 0.0,
+            "weights_used": {
+                "llm": round(w_llm / w_sum, 4),
+                "virality": round(w_vir / w_sum, 4),
+                "candidate": round(w_cand / w_sum, 4),
+                "llm_subscores": weights,
+            },
+            "candidate_source": c.get("candidate_source", "heuristic"),
+            "transcript_source": c.get("transcript_source", "whisper"),
+            "assessment_source": c.get("assessment_source", provider or "ollama"),
+            "is_synthetic": bool(c.get("is_synthetic", False)),
             "rank": None,
             "kept": False,
             "verdict_reason": f"ineligible: {', '.join(c['rejection_reasons'])}",
@@ -607,7 +736,20 @@ def rescore_clips(clips: list[dict], transcript: dict,
     return eligible_clips + ineligible_clips
 
 
-def _slice_text(transcript: dict, start: float, end: float) -> str:
-    ws = [w["word"] for w in transcript["words"]
-          if w["start"] >= start - 0.05 and w["end"] <= end + 0.05]
+def _slice_text(transcript: dict | None, start: float, end: float) -> str:
+    if not transcript or not isinstance(transcript, dict):
+        return ""
+    words = transcript.get("words")
+    if not words or not isinstance(words, list):
+        return ""
+    s_clean = _safe_num(start, default=0.0, min_v=0.0)
+    e_clean = _safe_num(end, default=0.0, min_v=s_clean)
+    ws = []
+    for w in words:
+        if not isinstance(w, dict) or "word" not in w:
+            continue
+        w_start = _safe_num(w.get("start"), default=-1.0, min_v=-1.0)
+        w_end = _safe_num(w.get("end"), default=-1.0, min_v=-1.0)
+        if w_start >= s_clean - 0.05 and w_end <= e_clean + 0.05:
+            ws.append(str(w["word"]))
     return " ".join(ws)

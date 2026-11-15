@@ -94,3 +94,25 @@ docs/
 | [Stage 8.3 Hardware Stress Report](audits/FRAMEZA_STAGE_8_3_HARDWARE_STRESS_REPORT.md) | Real media hardware validation on RTX 5050 (8GB VRAM) and 16GB RAM: VRAM eviction verified in 0.02s, 0 MB shared memory spill, 50.74s 3-clip run. |
 | [Stage 8.3 Video Quality Report](audits/FRAMEZA_STAGE_8_3_VIDEO_QUALITY_REPORT.md) | Independent visual framing, container integrity (0 corrupt packets via null muxer), 1080x1920 geometry, and audio loudnorm validation on production assets. |
 | [Stage 8.3 Final Production Signoff](audits/FRAMEZA_STAGE_8_3_FINAL_PRODUCTION_SIGNOFF.md) | Official production acceptance signoff covering all 8 audit dimensions (Audit A through Audit H). |
+
+---
+
+## Stage 8.4 Independent Production Audit, Ranking Accuracy & Real-World Validation
+
+| Report | Description |
+| :--- | :--- |
+| [Stage 8.4 Independent Codebase Audit](audits/FRAMEZA_STAGE_8_4_INDEPENDENT_AUDIT.md) | Comprehensive code audit of Stage 8.3 claims, uncovering and fixing ranking key type vulnerabilities, non-dict virality crashes, and slice text null errors. |
+| [Stage 8.4 Ranking Accuracy Report](audits/FRAMEZA_STAGE_8_4_RANKING_QUALITY_REPORT.md) | Numerical fortification matrix, full explainability breakdown schema, and ground-truth ranking validation on real comedy podcast dialogue. |
+| [Stage 8.4 Ollama Validation Report](audits/FRAMEZA_STAGE_8_4_OLLAMA_VALIDATION_REPORT.md) | Live Ollama inference evaluation verifying Qwen 3.5 reasoning token exhaustion and automatic fallback to Llama 3.2 in 2.80s. |
+| [Stage 8.4 Real Video Validation Report](audits/FRAMEZA_STAGE_8_4_REAL_VIDEO_VALIDATION_REPORT.md) | 100% uncached fresh end-to-end processing of 6-minute Ravi Gupta podcast excerpt into 5 vertical 1080x1920 clips (207.9s execution). |
+| [Stage 8.4 Hardware Resource Report](audits/FRAMEZA_STAGE_8_4_HARDWARE_RESOURCE_REPORT.md) | Target system telemetry: dedicated VRAM lifecycle, 0 MB shared memory paging, 0 freezes on RTX 5050 (8GB VRAM) and 16GB RAM. |
+| [Stage 8.4 Regression Test Report](audits/FRAMEZA_STAGE_8_4_REGRESSION_TEST_REPORT.md) | 602 passed, 1 skipped, 0 failed in 159.86s across all 48 repository test modules (100% pass rate). |
+| [Stage 8.4 Final Acceptance Report](audits/FRAMEZA_STAGE_8_4_FINAL_ACCEPTANCE_REPORT.md) | Official production readiness sign-off decision and deployment guidelines. |
+
+---
+
+## Stage 8.5 Targeted Ranking Integrity Remediation & Final Acceptance
+
+| Report | Description |
+| :--- | :--- |
+| [Stage 8.5 Final Remediation & Acceptance Report](audits/FRAMEZA_STAGE_8_5_FINAL_REMEDIATION_REPORT.md) | Complete remediation report for all 5 audit issues: mock data elimination, ranking mathematics reconciliation ($100\%$ formula match), virality normalization standardization (canonical $0.0-10.0$ scale), candidate traceability, real-media editorial validation, and full $606$-test automated suite certification. |
