@@ -230,6 +230,8 @@ class EditorSaveRequest(BaseModel):
     caption_preset: str | None = None
     caption_lang: str | None = None
     caption_anchor: float | None = None
+    caption_position: str = "bottom"
+    captions_enabled: bool = True
     crop_x_offset: float = 0.0
     crop_y_offset: float = 0.0
     zoom: float = 1.0
@@ -301,6 +303,8 @@ def get_clip_editor(job_name: str, index: int):
         "caption_preset": saved_plan.get("caption_preset", clip.get("preset", "modern-bold")),
         "caption_lang": saved_plan.get("caption_lang", clip.get("lang", "hinglish")),
         "caption_anchor": saved_plan.get("caption_anchor", 0.60),
+        "caption_position": saved_plan.get("caption_position", "bottom"),
+        "captions_enabled": saved_plan.get("captions_enabled", True if saved_plan.get("caption_preset") != "none" else False),
         "crop_x_offset": saved_plan.get("crop_x_offset", 0.0),
         "crop_y_offset": saved_plan.get("crop_y_offset", 0.0),
         "zoom": saved_plan.get("zoom", 1.0),

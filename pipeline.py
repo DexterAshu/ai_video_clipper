@@ -310,15 +310,39 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
         _check_cancel()
         clips = []
         n = max(1, len(candidates))
-        workers = _worker_count(cfg, n)
 
-        # Unload LLM from GPU VRAM before FFmpeg NVENC multi-worker rendering
+        # Phase A: Dedicated sequential AI preparation phase (metadata, virality, niche, timing repair)
+        # Prevents concurrent LLM requests and GPU VRAM competition.
+        prepared_ai = _prepare_clip_ai_sequentially(
+            candidates=candidates,
+            info=info,
+            transcript=transcript,
+            scene_data=scene_data,
+            edit_plans=edit_plans,
+            events=events,
+            cfg=cfg,
+            provider=provider,
+            caption_language=cap_lang,
+            job_dir=job_dir,
+            metadata_mod=metadata_mod,
+            tracker=tracker
+        )
+
+        # Phase B: Complete model eviction and verification before video render
         try:
             import llm_manager
-            llm_manager.unload_model()
+            log.info("unloading LLM and verifying VRAM eviction before rendering...")
+            llm_manager.wait_for_unload(timeout_s=10.0)
         except Exception as e:
-            log.debug("could not unload llm before render: %s", e)
+            log.debug("could not verify llm unload before render: %s", e)
 
+        # Resource safety check
+        import resource_coordinator
+        pressure = resource_coordinator.coordinator.check_resource_pressure(cfg)
+        if pressure.get("warning") or pressure.get("critical"):
+            log.warning("system resource pressure check: %s", "; ".join(pressure.get("reasons", [])))
+
+        workers = _worker_count(cfg, n)
         tracker.start("render", f"rendering {n} clips ({workers} workers)")
         # Seed an upfront render ETA from this machine's past throughput so the
         # UI shows an estimate before the first clip finishes.
@@ -344,7 +368,8 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
                     cut_mod, reframe_mod, captions_mod, metadata_mod,
                     scenes_mod, music_path, music_attr, music_volume_db,
                     tracker, edit_plans[i] if edit_plans else None,
-                    events, caption_language=cap_lang): i
+                    events, caption_language=cap_lang,
+                    prepared_ai=prepared_ai.get(i)): i
                     for i, cand in enumerate(candidates)}
                 for fut in as_completed(futures):
                     if cancel is not None and cancel.is_set():
@@ -428,7 +453,25 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                 preset, aspect, debug_dir, cut_mod, reframe_mod, captions_mod,
                 metadata_mod, scenes_mod, music_path=None, music_attr="",
                 music_volume_db=-18.0, tracker=None, edit_plan=None,
-                events=None, caption_language: str = "hinglish") -> dict:
+                events=None, caption_language: str = "hinglish",
+                prepared_ai: dict | None = None) -> dict:
+    import resource_coordinator
+    with resource_coordinator.coordinator.track_worker():
+        return _render_one_impl(
+            i, cand, info, transcript, scene_data, job_dir, cfg, provider,
+            preset, aspect, debug_dir, cut_mod, reframe_mod, captions_mod,
+            metadata_mod, scenes_mod, music_path=music_path, music_attr=music_attr,
+            music_volume_db=music_volume_db, tracker=tracker, edit_plan=edit_plan,
+            events=events, caption_language=caption_language, prepared_ai=prepared_ai
+        )
+
+
+def _render_one_impl(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
+                     preset, aspect, debug_dir, cut_mod, reframe_mod, captions_mod,
+                     metadata_mod, scenes_mod, music_path=None, music_attr="",
+                     music_volume_db=-18.0, tracker=None, edit_plan=None,
+                     events=None, caption_language: str = "hinglish",
+                     prepared_ai: dict | None = None) -> dict:
     def _sub(frac: float) -> None:
         if tracker:
             tracker.item("render", f"clip_{i:02d}", frac)
@@ -570,16 +613,34 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
         source_for_captions = clip_dir / "reframed.mp4"
     _sub(0.5)
 
-    if edit_plan:
+    if prepared_ai and "words" in prepared_ai:
+        words = list(prepared_ai["words"])
+        if edit_plan:
+            trans = edit_plan.get("transitions") or {}
+            cap_pos = edit_plan.get("caption_position") or cfg.get("captions", {}).get("position", "bottom")
+            cap_kwargs = dict(anchor=edit_plan["caption_anchor"], cta=edit_plan["cta"],
+                              captions_enabled=edit_plan["captions_enabled"],
+                              fades=edit_plan["fades"], zoom_punch=edit_plan["zoom_punch"],
+                              zoom_events=edit_plan.get("zoom_events") or None,
+                              popin_events=edit_plan.get("popin_events") or None,
+                              whip_times=(trans.get("times") or None
+                                          if trans.get("kind") == "whip" else None),
+                              position=cap_pos)
+        else:
+            cap_kwargs = captions_mod.cta_from_cfg(cfg)
+            cap_kwargs["position"] = cfg.get("captions", {}).get("position", "bottom")
+    elif edit_plan:
         words = edit_plan["words"]
         trans = edit_plan.get("transitions") or {}
+        cap_pos = edit_plan.get("caption_position") or cfg.get("captions", {}).get("position", "bottom")
         cap_kwargs = dict(anchor=edit_plan["caption_anchor"], cta=edit_plan["cta"],
                           captions_enabled=edit_plan["captions_enabled"],
                           fades=edit_plan["fades"], zoom_punch=edit_plan["zoom_punch"],
                           zoom_events=edit_plan.get("zoom_events") or None,
                           popin_events=edit_plan.get("popin_events") or None,
                           whip_times=(trans.get("times") or None
-                                      if trans.get("kind") == "whip" else None))
+                                      if trans.get("kind") == "whip" else None),
+                          position=cap_pos)
     else:
         words = [{"word": w["word"],
                   "start": round(max(0.0, w["start"] - out_start), 3),
@@ -587,33 +648,33 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                  for w in transcript["words"]
                  if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
         cap_kwargs = captions_mod.cta_from_cfg(cfg)
+        cap_kwargs["position"] = cfg.get("captions", {}).get("position", "bottom")
 
-    # On-demand clip transcription fallback: if segment-first skipped this span,
-    # transcribe the clip's audio slice so captions are NEVER missing.
-    if not words and cfg.get("captions", {}).get("enabled", True) and preset != "none":
-        try:
-            import transcribe as transcribe_mod
-            fresh_tr = transcribe_mod.transcribe(info["audio_path"], cfg, spans=[(out_start, out_end)])
-            if fresh_tr and fresh_tr.get("words"):
-                words = [{"word": w["word"],
-                          "start": round(max(0.0, w["start"] - out_start), 3),
-                          "end": round(max(0.0, w["end"] - out_start), 3)}
-                         for w in fresh_tr["words"]
-                         if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
-                log.info("clip %02d recovered %d words via on-demand transcribe", i, len(words))
-        except Exception as tr_err:
-            log.warning("on-demand clip transcribe fallback failed (%s)", tr_err)
+    # Only fall back to on-demand transcribe / caption_lang if prepared_ai is NOT provided
+    if not prepared_ai:
+        if not words and cfg.get("captions", {}).get("enabled", True) and preset != "none":
+            try:
+                import transcribe as transcribe_mod
+                fresh_tr = transcribe_mod.transcribe(info["audio_path"], cfg, spans=[(out_start, out_end)],
+                                                     device_override="cpu", compute_override="int8")
+                if fresh_tr and fresh_tr.get("words"):
+                    words = [{"word": w["word"],
+                              "start": round(max(0.0, w["start"] - out_start), 3),
+                              "end": round(max(0.0, w["end"] - out_start), 3)}
+                             for w in fresh_tr["words"]
+                             if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
+                    log.info("clip %02d recovered %d words via on-demand transcribe", i, len(words))
+            except Exception as tr_err:
+                log.warning("on-demand clip transcribe fallback failed (%s)", tr_err)
 
-    # Dynamic caption language: translate / transliterate words (e.g. Hindi, Hinglish, English)
-    # preserving exact audio timestamps and karaoke pop
-    if words and caption_language:
-        try:
-            import caption_lang as clang_mod
-            words = clang_mod.process_caption_language(
-                words, target_lang=caption_language, cfg=cfg, provider=provider
-            )
-        except Exception as e:
-            log.warning("caption language processing failed (%s) — using original words", e)
+        if words and caption_language:
+            try:
+                import caption_lang as clang_mod
+                words = clang_mod.process_caption_language(
+                    words, target_lang=caption_language, cfg=cfg, provider=provider
+                )
+            except Exception as e:
+                log.warning("caption language processing failed (%s) — using original words", e)
 
     if cfg.get("captions", {}).get("enabled") is False or preset == "none":
         cap_kwargs["captions_enabled"] = False
@@ -665,7 +726,10 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
     duration = edit_plan["output_duration"] if edit_plan else round(out_end - out_start, 3)
     clip_text = " ".join(w["word"] for w in words)
     src_title_ctx = info.get("source_name", "") or Path(info.get("video_path", "")).stem
-    if cfg.get("metadata", {}).get("enabled") is False:
+
+    if prepared_ai and "meta" in prepared_ai:
+        meta = dict(prepared_ai["meta"])
+    elif cfg.get("metadata", {}).get("enabled") is False:
         meta = {
             "title": f"Clip {i + 1}",
             "description": f"Clip {i + 1} from {cand.get('hook', 'video')}.",
@@ -674,6 +738,7 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
     else:
         meta = metadata_mod.generate_metadata(clip_text, cand["hook"], cfg, provider,
                                               source_title=src_title_ctx)
+
     if music_attr:  # license requires attribution in the description
         meta = {**meta, "description": f"{meta['description']} {music_attr}"}
     credit = str(cfg.get("metadata", {}).get("credit_text", "")).strip()
@@ -687,19 +752,24 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
         # informational only — not part of EDIT_PLAN's validated schema/enum,
         # so it rides in the metadata.json summary rather than plan["flags"]
         refine_summary = {**refine_summary, "double_caption_warning": dup_caption_warning}
-    # cuts within this clip (real pacing signal for the engagement score)
-    n_cuts = len(scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end))
-    cuts_per_min = (n_cuts / (duration / 60.0)) if duration > 0 else None
-    try:
-        profile = style_mod.load_profile(cfg)
-    except Exception:  # noqa: BLE001 — profile is optional context
-        profile = None
-    vir = virality_mod.rate_virality(
-        clip_text, cand["hook"], duration, cfg, provider,
-        refine=refine_summary, profile=profile,
-        extra={"cuts_per_min": cuts_per_min,
-               "captions_enabled": (edit_plan["captions_enabled"]
-                                    if edit_plan else True)})
+
+    if prepared_ai and "virality" in prepared_ai:
+        vir = prepared_ai["virality"]
+    else:
+        # cuts within this clip (real pacing signal for the engagement score)
+        n_cuts = len(scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end))
+        cuts_per_min = (n_cuts / (duration / 60.0)) if duration > 0 else None
+        try:
+            profile = style_mod.load_profile(cfg)
+        except Exception:  # noqa: BLE001 — profile is optional context
+            profile = None
+        vir = virality_mod.rate_virality(
+            clip_text, cand["hook"], duration, cfg, provider,
+            refine=refine_summary, profile=profile,
+            extra={"cuts_per_min": cuts_per_min,
+                   "captions_enabled": (edit_plan["captions_enabled"]
+                                        if edit_plan else True)})
+
     # Provenance: the ORIGINAL source window this clip came from, before the
     # refiner's pause-removal / hook-shift / ending-extend changed the bounds.
     # Distinct from start/end below (the final rendered window).
@@ -709,13 +779,17 @@ def _render_one(i, cand, info, transcript, scene_data, job_dir, cfg, provider,
                "original_source_start_s": orig_start,
                "original_source_end_s": orig_end,
                "source_name": source_name}
-    try:
-        import classify as classify_mod
-        payload["niche"] = classify_mod.classify_niche(clip_text, meta, cfg,
-                                                       provider)
-    except Exception as e:  # noqa: BLE001 — niche tagging never blocks a render
-        log.warning("clip %02d: niche classification failed (%s)", i, e)
-        payload["niche"] = "other"
+
+    if prepared_ai and "niche" in prepared_ai:
+        payload["niche"] = prepared_ai["niche"]
+    else:
+        try:
+            import classify as classify_mod
+            payload["niche"] = classify_mod.classify_niche(clip_text, meta, cfg,
+                                                           provider)
+        except Exception as e:  # noqa: BLE001 — niche tagging never blocks a render
+            log.warning("clip %02d: niche classification failed (%s)", i, e)
+            payload["niche"] = "other"
     # viral_v2 audit trail: which detected events fall inside this clip
     clip_events = [e for e in (events or [])
                    if e["t_start_s"] < out_end and e["t_end_s"] > out_start]
@@ -759,11 +833,196 @@ def _remap_to_output(t: float, segments: list) -> float | None:
 
 
 def _worker_count(cfg: dict, n_clips: int) -> int:
-    import os as _os
-    setting = cfg["render"].get("parallel_workers", "auto")
-    if setting != "auto":
-        return max(1, int(setting))
-    return max(1, min(n_clips, (_os.cpu_count() or 2) // 2))
+    """Calculate safe render concurrency for RTX 5050 (8GB VRAM) / 16GB RAM.
+    Defaults strictly to 1. Configured values are clamped to max 2 after safety checks.
+    """
+    import resource_coordinator
+
+    setting = cfg.get("render", {}).get("parallel_workers", 1)
+    if setting in ("auto", None, "", 0):
+        target = 1
+    else:
+        try:
+            target = max(1, int(setting))
+        except (ValueError, TypeError):
+            target = 1
+
+    # Default and baseline cap: 1 worker
+    if target <= 1:
+        return 1
+
+    # When 2 workers are explicitly configured: validate resource safety
+    if target >= 2:
+        pressure = resource_coordinator.coordinator.check_resource_pressure(cfg)
+        if pressure.get("critical"):
+            log.warning("parallel_workers set to %d, but critical resource pressure detected (%s) "
+                        "— falling back to 1 safe worker", target, ", ".join(pressure.get("reasons", [])))
+            return 1
+
+        snap = resource_coordinator.coordinator.snapshot()
+        # Verify sufficient headroom: at least 3GB free VRAM and RAM < 80%
+        has_vram_headroom = (snap.gpu_total_mb == 0) or (snap.gpu_free_mb >= 3000.0)
+        has_ram_headroom = snap.ram_percent < 80.0
+        if not (has_vram_headroom and has_ram_headroom):
+            log.warning("parallel_workers set to %d, but insufficient memory headroom "
+                        "(free VRAM: %.0fMB, RAM: %.1f%%) — falling back to 1 safe worker",
+                        target, snap.gpu_free_mb, snap.ram_percent)
+            return 1
+
+        log.warning("EXPERIMENTAL: Running 2 parallel render workers. Monitoring resource pressure.")
+        # Hard cap: Never exceed 2 on this hardware
+        return min(2, min(n_clips, target))
+
+    return 1
+
+
+def _prepare_clip_ai_sequentially(candidates: list[dict],
+                                  info: dict,
+                                  transcript: dict,
+                                  scene_data: list[dict] | dict,
+                                  edit_plans: list[dict] | None,
+                                  events: list[dict] | None,
+                                  cfg: dict,
+                                  provider: str | None,
+                                  caption_language: str,
+                                  job_dir: Path,
+                                  metadata_mod,
+                                  tracker=None) -> dict[int, dict]:
+    """Phase A: Sequential AI preparation (metadata, virality, niche, timing repair, language).
+    Runs strictly on the main thread before model eviction and video rendering.
+    Guarantees no concurrent LLM or CUDA requests.
+    """
+    import caption_lang as clang_mod
+    import classify as classify_mod
+    import style_refiner as style_mod
+    import transcribe as transcribe_mod
+    import virality as virality_mod
+
+    prepared: dict[int, dict] = {}
+    src_title_ctx = info.get("source_name", "") or Path(info.get("video_path", "")).stem
+    profile = None
+    try:
+        profile = style_mod.load_profile(cfg)
+    except Exception:
+        pass
+
+    for i, cand in enumerate(candidates):
+        clip_dir = job_dir / f"clip_{i:02d}"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        prep_cache = clip_dir / "prepared_ai.json"
+        if prep_cache.exists():
+            try:
+                cached_data = json.loads(prep_cache.read_text(encoding="utf-8"))
+                if isinstance(cached_data, dict) and "meta" in cached_data and "words" in cached_data:
+                    prepared[i] = cached_data
+                    log.info("clip %02d: reused prepared AI data from cache", i)
+                    continue
+            except Exception as e:
+                log.debug("could not load prepared_ai.json for clip %02d: %s", i, e)
+
+        edit_plan = edit_plans[i] if edit_plans and i < len(edit_plans) else None
+        if edit_plan:
+            segments = edit_plan["segments"]
+            out_start, out_end = segments[0][0], segments[-1][1]
+            words = list(edit_plan.get("words", []))
+            duration = edit_plan.get("output_duration", round(out_end - out_start, 3))
+        else:
+            out_start, out_end = cand["start"], cand["end"]
+            duration = round(out_end - out_start, 3)
+            words = [{"word": w["word"],
+                      "start": round(max(0.0, w["start"] - out_start), 3),
+                      "end": round(max(0.0, w["end"] - out_start), 3)}
+                     for w in transcript.get("words", [])
+                     if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
+
+        # Fix C: Sequential missing word-timing repair on CPU (int8) before rendering
+        if not words and cfg.get("captions", {}).get("enabled", True):
+            try:
+                repaired = transcribe_mod.repair_clip_transcription(
+                    info["audio_path"], out_start, out_end, cfg, prefer_cpu=True
+                )
+                if repaired:
+                    words = [{"word": w["word"],
+                              "start": round(max(0.0, w["start"] - out_start), 3),
+                              "end": round(max(0.0, w["end"] - out_start), 3)}
+                             for w in repaired]
+                    log.info("clip %02d recovered %d words via safe sequential transcribe", i, len(words))
+            except Exception as tr_err:
+                log.warning("clip %02d: word-timing repair skipped (%s)", i, tr_err)
+
+        # Dynamic caption language: translate / transliterate words sequentially while LLM is active
+        if words and caption_language:
+            try:
+                words = clang_mod.process_caption_language(
+                    words, target_lang=caption_language, cfg=cfg, provider=provider
+                )
+            except Exception as e:
+                log.warning("clip %02d caption language processing failed (%s) — using original words", i, e)
+
+        clip_text = " ".join(w["word"] for w in words)
+
+        # Metadata generation
+        if cfg.get("metadata", {}).get("enabled") is False:
+            meta = {
+                "title": f"Clip {i + 1}",
+                "description": f"Clip {i + 1} from {cand.get('hook', 'video')}.",
+                "hashtags": ["#shorts", "#reels", "#viral", "#video"]
+            }
+        else:
+            try:
+                meta = metadata_mod.generate_metadata(
+                    clip_text, cand.get("hook", "video"), cfg, provider,
+                    source_title=src_title_ctx
+                )
+            except Exception as e:
+                log.warning("clip %02d metadata generation failed (%s) — using safe template", i, e)
+                from metadata import template_metadata
+                meta = template_metadata(cand.get("hook", "video"), clip_text)
+
+        # Virality rating
+        refine_summary = style_mod.summarize(edit_plan) if edit_plan else None
+        n_cuts = 0
+        if scene_data:
+            try:
+                import scenes as scenes_mod
+                n_cuts = len(scenes_mod.scene_cuts_in_range(scene_data, out_start, out_end))
+            except Exception:
+                pass
+        cuts_per_min = (n_cuts / (duration / 60.0)) if duration > 0 else None
+        try:
+            vir = virality_mod.rate_virality(
+                clip_text, cand.get("hook", ""), duration, cfg, provider,
+                refine=refine_summary, profile=profile,
+                extra={"cuts_per_min": cuts_per_min,
+                       "captions_enabled": (edit_plan["captions_enabled"] if edit_plan else True)}
+            )
+        except Exception as e:
+            log.warning("clip %02d virality rating fallback (%s)", i, e)
+            vir = {"score": 50.0, "breakdown": {}, "reasons": ["heuristic default"]}
+
+        # Niche classification
+        try:
+            niche = classify_mod.classify_niche(clip_text, meta, cfg, provider)
+        except Exception as e:
+            log.warning("clip %02d niche classification failed (%s)", i, e)
+            niche = "other"
+
+        clip_prep = {
+            "words": words,
+            "meta": meta,
+            "virality": vir,
+            "niche": niche,
+            "duration": duration,
+            "out_start": out_start,
+            "out_end": out_end
+        }
+        prepared[i] = clip_prep
+        try:
+            prep_cache.write_text(json.dumps(clip_prep, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    return prepared
 
 
 def _print_timings(timings: dict) -> None:

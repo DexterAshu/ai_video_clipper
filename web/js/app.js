@@ -77,6 +77,22 @@ function updateWorkspaceBadge() {
   badge.style.display = name ? "" : "none";
 }
 
+function backButton(defaultHash = "#/", label = "← Back") {
+  const btn = el("button", {
+    class: "btn btn-ghost btn-sm",
+    type: "button",
+    style: "display:inline-flex;align-items:center;gap:6px;cursor:pointer;",
+  }, label);
+  btn.addEventListener("click", () => {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      location.hash = defaultHash;
+    }
+  });
+  return btn;
+}
+
 // --------------------------------------------------------- workspaces -----
 
 function renderWorkspaceSelect() {
@@ -149,6 +165,7 @@ function renderWorkspaceSelect() {
   });
 
   view.append(el("section", { class: "screen" },
+    el("div", { style: "margin-bottom:12px;" }, backButton("#/")),
     el("div", { class: "hero" },
       el("div", { class: "t-label" }, "Workspaces"),
       el("h1", { class: "t-display" }, "Which channel are you working on?"),
@@ -178,7 +195,7 @@ function renderHome() {
   const o = {
     count: 0, aspect: "9:16", quality: "1080p", faceTracking: true,
     captions: true, metadata: true, preset: "", font: "", music: "",
-    captionLanguage: "hinglish",
+    captionLanguage: "hinglish", captionPosition: "bottom",
     musicVol: -18, cta: "", highlight: "", pacing: "", clipMin: "30",
     clipMax: "60", subsMode: "", profile: "", wmMode: "text", wmText: "",
     wmImage: "", wmImageName: "", wmPos: "bottom-right",
@@ -376,11 +393,17 @@ function renderHome() {
   faceToggle.input.addEventListener("change", () => { o.faceTracking = faceToggle.input.checked; });
 
   const subsToggle = toggle(true, "Burn Animated Subtitles");
-  subsToggle.input.addEventListener("change", () => {
-    o.captions = subsToggle.input.checked;
-    presetRow.node.style.display = o.captions ? "" : "none";
-    fontRow.node.style.display = o.captions ? "" : "none";
-  });
+  const noCapsNotice = el("div", {
+    class: "card card-flat",
+    style: "display:none;padding:10px 14px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.15);border-radius:8px;font-size:var(--text-xs);color:var(--text-dim);"
+  }, "⚡ Subtitles disabled — your clips will be exported as clean video without burned text.");
+
+  const capPosSel = el("select", { class: "select", "aria-label": "Caption Position" },
+    el("option", { value: "bottom", selected: "" }, "Bottom (Recommended — Reels & Shorts)"),
+    el("option", { value: "center" }, "Center (Middle of screen)"),
+    el("option", { value: "top" }, "Top (Upper third — Podcasts & Reactions)"));
+  capPosSel.addEventListener("change", () => { o.captionPosition = capPosSel.value; });
+  const capPosRow = field("Caption Position", capPosSel);
 
   const viralToggle = toggle(true, "AI Viral Moments Detection (Ollama)");
   const metaToggle = toggle(true, "AI Titles, Descriptions & Hashtags");
@@ -393,7 +416,14 @@ function renderHome() {
     const v = await pickPreset(o.preset, o.font);
     if (v !== null) {
       o.preset = v;
-      presetRow.btn.textContent = v.replace(/-/g, " ");
+      if (v === "none") {
+        subsToggle.input.checked = false;
+        o.captions = false;
+      } else {
+        subsToggle.input.checked = true;
+        o.captions = true;
+      }
+      updateCaptionsUi();
     }
   });
   const fontRow = pickerRow("Subtitle Font", "Style's own font", async () => {
@@ -409,6 +439,30 @@ function renderHome() {
     ["hindi", "Hindi (देवनागरी)"],
     ["english", "English"]
   ], "hinglish", (v) => { o.captionLanguage = v; });
+  const langSegRow = field("Caption Language", langSeg);
+
+  function updateCaptionsUi() {
+    const active = o.captions && o.preset !== "none";
+    langSegRow.style.display = active ? "" : "none";
+    fontRow.node.style.display = active ? "" : "none";
+    capPosRow.style.display = active ? "" : "none";
+    noCapsNotice.style.display = active ? "none" : "";
+    if (!active) {
+      presetRow.btn.textContent = "No captions (Clean Video)";
+    } else if (o.preset && o.preset !== "none") {
+      presetRow.btn.textContent = o.preset.replace(/-/g, " ");
+    } else {
+      presetRow.btn.textContent = "Style's default";
+    }
+  }
+
+  subsToggle.input.addEventListener("change", () => {
+    o.captions = subsToggle.input.checked;
+    if (subsToggle.input.checked && o.preset === "none") {
+      o.preset = "";
+    }
+    updateCaptionsUi();
+  });
 
   // ---- background music ----
   const musicToggle = toggle(false, "Add Background Music");
@@ -518,7 +572,6 @@ function renderHome() {
     el("div", { class: "studio-section-title" }, "3. AI Features & Highlight Selection"),
     el("div", { class: "toggles-grid" },
       faceToggle.node,
-      subsToggle.node,
       viralToggle.node,
       metaToggle.node,
       styleToggle.node),
@@ -527,7 +580,10 @@ function renderHome() {
 
   const stylingCard = el("div", { class: "studio-card card" },
     el("div", { class: "studio-section-title" }, "4. Captions & Call To Action"),
-    field("Caption Language", langSeg),
+    subsToggle.node,
+    noCapsNotice,
+    capPosRow,
+    langSegRow,
     presetRow.node,
     fontRow.node,
     field("Call to Action (Ending Message)", ctaInput));
@@ -614,10 +670,11 @@ function renderHome() {
         aspect: o.aspect,
         quality: o.quality,
         face_tracking: o.faceTracking,
-        generate_captions: o.captions,
+        generate_captions: Boolean(o.captions && o.preset !== "none"),
         generate_metadata: o.metadata,
         caption_language: o.captionLanguage || "hinglish",
-        preset: o.captions ? (o.preset || null) : "none",
+        caption_position: o.captionPosition || "bottom",
+        preset: (o.captions && o.preset !== "none") ? (o.preset || null) : "none",
         music: o.music,
         music_volume_db: o.musicVol,
         cta_text: o.cta,
@@ -681,7 +738,9 @@ function renderRun(runId) {
 
   const headRow = el("div", { class: "results-head", style: "margin-bottom:var(--sp-4)" },
     el("div", {},
-      el("div", { class: "t-label" }, "Processing Run"),
+      el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+        backButton("#/activity", "← Back to Activity"),
+        el("div", { class: "t-label", style: "margin:0;" }, "Processing Run")),
       stageTitle,
       detail),
     el("div", { class: "field-inline", style: "align-items:center;gap:12px" },
@@ -948,7 +1007,9 @@ function renderActivity() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Activity"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Activity")),
         el("h1", { class: "t-display" }, "Runs in progress"),
         el("p", { class: "t-dim", style: "margin:4px 0 0" },
           "Clip-making runs on the app, not this page — a run keeps going if "
@@ -986,7 +1047,9 @@ async function renderResults(jobName) {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Your clips"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/activity", "← Back to Activity"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Your clips")),
         el("h1", { class: "t-display" }, "Ready to post"),
         sub),
       el("div", { style: "display:flex;gap:12px;flex-wrap:wrap" },
@@ -1316,9 +1379,17 @@ async function renderEditor(jobName, indexStr) {
     { id: "bold-impact", label: "Bold Impact (Legacy)" },
     { id: "none", label: "No captions (Clean Video)" }
   ];
+  const initialPreset = state.preset || edData?.caption_preset || "modern-bold";
+  const initialCapsEnabled = edData?.captions_enabled !== false && initialPreset !== "none";
+
+  const capsToggle = toggle(initialCapsEnabled, "Burn Subtitles on this clip");
+  const noCapsNoticeEditor = el("div", {
+    class: "card card-flat",
+    style: "display:none;padding:10px 14px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.15);border-radius:8px;font-size:var(--text-xs);color:var(--text-dim);"
+  }, "⚡ Subtitles disabled for this clip — will be exported as clean video without burned text.");
+
   const presetSel = el("select", { class: "select" },
-    ...PRESET_OPTIONS.map((p) => el("option", p.id === state.preset ? { value: p.id, selected: "" } : { value: p.id }, p.label)));
-  presetSel.onchange = () => { state.preset = presetSel.value; };
+    ...PRESET_OPTIONS.map((p) => el("option", p.id === initialPreset ? { value: p.id, selected: "" } : { value: p.id }, p.label)));
 
   const langSel = el("select", { class: "select" },
     el("option", { value: "hinglish" }, "Hinglish (Latin alphabet)"),
@@ -1326,9 +1397,69 @@ async function renderEditor(jobName, indexStr) {
     el("option", { value: "english" }, "English"));
   langSel.value = edData?.caption_lang || clip.lang || "hinglish";
 
-  const anchorIn = el("input", { type: "range", min: "0.52", max: "0.66", step: "0.01", value: String(edData?.caption_anchor || 0.60), class: "input" });
+  let initialAnchor = edData?.caption_anchor || 0.60;
+  let initialPos = edData?.caption_position || (initialAnchor <= 0.30 ? "top" : initialAnchor <= 0.65 ? "center" : "bottom");
+
+  const capPosSel = el("select", { class: "select" },
+    el("option", { value: "bottom" }, "Bottom (Recommended — 78% from top)"),
+    el("option", { value: "center" }, "Center (Middle — 50% from top)"),
+    el("option", { value: "top" }, "Top (Upper third — 20% from top)"),
+    el("option", { value: "custom" }, "Custom Position (Use slider below)"));
+  capPosSel.value = initialPos;
+
+  const anchorIn = el("input", { type: "range", min: "0.15", max: "0.85", step: "0.01", value: String(initialAnchor), class: "input" });
   const anchorVal = el("span", { class: "t-mono t-dim", style: "width:45px;text-align:right;" }, `${Math.round(Number(anchorIn.value) * 100)}%`);
-  anchorIn.oninput = () => { anchorVal.textContent = `${Math.round(Number(anchorIn.value) * 100)}%`; };
+
+  capPosSel.onchange = () => {
+    if (capPosSel.value === "bottom") {
+      anchorIn.value = "0.78";
+    } else if (capPosSel.value === "center") {
+      anchorIn.value = "0.50";
+    } else if (capPosSel.value === "top") {
+      anchorIn.value = "0.20";
+    }
+    anchorVal.textContent = `${Math.round(Number(anchorIn.value) * 100)}%`;
+  };
+
+  anchorIn.oninput = () => {
+    anchorVal.textContent = `${Math.round(Number(anchorIn.value) * 100)}%`;
+    capPosSel.value = "custom";
+  };
+
+  const captionControlsGroup = el("div", { style: "display:grid;gap:12px;" },
+    field("Transcription Text", captionTextIn),
+    field("Caption Position", capPosSel),
+    field("Vertical Position (% from top)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, anchorIn, anchorVal)),
+    field("Preset Style", presetSel),
+    field("Language", langSel));
+
+  function updateEditorCaptionsUi() {
+    const on = capsToggle.input.checked && presetSel.value !== "none";
+    captionControlsGroup.style.display = on ? "" : "none";
+    noCapsNoticeEditor.style.display = on ? "none" : "";
+  }
+
+  capsToggle.input.onchange = () => {
+    if (capsToggle.input.checked) {
+      if (presetSel.value === "none") presetSel.value = "modern-bold";
+    } else {
+      presetSel.value = "none";
+    }
+    state.preset = presetSel.value;
+    updateEditorCaptionsUi();
+  };
+
+  presetSel.onchange = () => {
+    state.preset = presetSel.value;
+    if (presetSel.value === "none") {
+      capsToggle.input.checked = false;
+    } else {
+      capsToggle.input.checked = true;
+    }
+    updateEditorCaptionsUi();
+  };
+
+  updateEditorCaptionsUi();
 
   // 4. Metadata Editor
   const titleIn = el("input", { class: "input", type: "text", value: edData?.title || clip.metadata?.title || `Clip ${index + 1}` });
@@ -1379,6 +1510,8 @@ async function renderEditor(jobName, indexStr) {
         caption_preset: presetSel.value,
         caption_lang: langSel.value,
         caption_anchor: Number(anchorIn.value),
+        caption_position: capPosSel.value === "custom" ? (Number(anchorIn.value) < 0.35 ? "top" : Number(anchorIn.value) < 0.65 ? "center" : "bottom") : capPosSel.value,
+        captions_enabled: Boolean(capsToggle.input.checked && presetSel.value !== "none"),
         crop_x_offset: Number(panXIn.value),
         crop_y_offset: Number(tiltYIn.value),
         zoom: Number(zoomIn.value),
@@ -1421,6 +1554,8 @@ async function renderEditor(jobName, indexStr) {
           caption_preset: presetSel.value,
           caption_lang: langSel.value,
           caption_anchor: Number(anchorIn.value),
+          caption_position: capPosSel.value === "custom" ? (Number(anchorIn.value) < 0.35 ? "top" : Number(anchorIn.value) < 0.65 ? "center" : "bottom") : capPosSel.value,
+          captions_enabled: Boolean(capsToggle.input.checked && presetSel.value !== "none"),
           crop_x_offset: Number(panXIn.value),
           crop_y_offset: Number(tiltYIn.value),
           zoom: Number(zoomIn.value),
@@ -1481,7 +1616,7 @@ async function renderEditor(jobName, indexStr) {
         el("p", { class: "t-dim", style: "margin:4px 0 0" }, clip.source_name || job.source || "")),
       el("div", { style: "display:flex;gap:8px;align-items:center;" },
         fullResetBtn,
-        el("a", { class: "btn btn-ghost", href: `#/results/${encodeURIComponent(jobName)}` }, "Back to clips"))),
+        el("a", { class: "btn btn-ghost", href: `#/results/${encodeURIComponent(jobName)}` }, "← Back to clips"))),
     el("div", { class: "editor-grid" },
       el("div", { class: "editor-video" }, video),
       el("div", { class: "editor-controls", style: "display:grid;gap:16px;" },
@@ -1514,10 +1649,9 @@ async function renderEditor(jobName, indexStr) {
         // Section 3: Captions
         el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
           el("h3", { class: "t-title", style: "margin:0;" }, "3. Captions & Typography"),
-          field("Transcription Text", captionTextIn),
-          field("Preset Style", presetSel),
-          field("Language", langSel),
-          field("Vertical Position (% from top)", el("div", { style: "display:flex;align-items:center;gap:10px;" }, anchorIn, anchorVal))),
+          capsToggle.node,
+          noCapsNoticeEditor,
+          captionControlsGroup),
 
         // Section 4: Metadata
         el("div", { class: "card card-flat", style: "display:grid;gap:12px;" },
@@ -1552,7 +1686,9 @@ function renderLibrary() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Library"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Library")),
         el("h1", { class: "t-display" }, "All clips"),
         el("p", { class: "t-dim", style: "margin:4px 0 0" },
           "Every clip on disk, from every run — samples, pending, approved, "
@@ -1639,7 +1775,9 @@ function renderQueue() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Queue"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Queue")),
         el("h1", { class: "t-display" }, "Several videos at once"),
         el("p", { class: "t-dim", style: "margin:4px 0 0" },
           "They run one after another — leave this open or come back later.")),
@@ -1666,7 +1804,9 @@ async function renderYouTube() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "YouTube"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "YouTube")),
         el("h1", { class: "t-display" }, "Auto-upload"),
         el("p", { class: "t-dim", style: "margin:4px 0 0" },
           "Finished clips get scheduled to your channel at good times of day."))),
@@ -1835,7 +1975,9 @@ async function renderPresets() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Presets"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Presets")),
         el("h1", { class: "t-display" }, "Your editing styles"))),
     card));
   mountPresets(card);
@@ -1846,7 +1988,9 @@ async function renderChannels() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Channels"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Channels")),
         el("h1", { class: "t-display" }, "Approved channels"))),
     card));
   mountChannels(card);
@@ -1859,7 +2003,9 @@ async function renderAnalytics() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Analytics"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Analytics")),
         el("h1", { class: "t-display" }, "How your clips are doing"),
         el("p", { class: "t-dim", style: "margin:4px 0 0" },
           "Numbers and suggestions come only from your own uploaded clips."))),
@@ -2026,7 +2172,9 @@ async function renderSettings() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "Settings"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "Settings")),
         el("h1", { class: "t-display" }, "How Frameza works"))),
     wrap));
 
@@ -2301,7 +2449,9 @@ async function renderHistory() {
   view.append(el("section", { class: "screen" },
     el("div", { class: "results-head" },
       el("div", {},
-        el("div", { class: "t-label" }, "History"),
+        el("div", { style: "display:flex;align-items:center;gap:12px;margin-bottom:6px;" },
+          backButton("#/", "← Back"),
+          el("div", { class: "t-label", style: "margin:0;" }, "History")),
         el("h1", { class: "t-display" }, "Past runs")),
       el("div", { class: "field-inline" },
         backfillBtn,

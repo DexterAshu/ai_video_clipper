@@ -139,6 +139,8 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
     man_zoom = float(studio_plan.get("zoom", 1.0))
     cap_text = studio_plan.get("caption_text")
     cap_anchor = studio_plan.get("caption_anchor")
+    cap_position = studio_plan.get("caption_position")
+    captions_enabled = studio_plan.get("captions_enabled", True)
     mus_enabled = bool(studio_plan.get("music_enabled", False))
     mus_track = studio_plan.get("music_track")
     mus_vol = float(studio_plan.get("music_volume_db", -18.0))
@@ -231,14 +233,16 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
     if edit_plan:
         words = edit_plan["words"]
         trans = edit_plan.get("transitions") or {}
-        cap_kwargs = dict(anchor=cap_anchor if cap_anchor is not None else edit_plan["caption_anchor"],
-                          cta=edit_plan["cta"],
-                          captions_enabled=edit_plan["captions_enabled"],
-                          fades=edit_plan["fades"], zoom_punch=edit_plan["zoom_punch"],
+        is_cap_on = captions_enabled if captions_enabled is not None else edit_plan.get("captions_enabled", True)
+        cap_kwargs = dict(anchor=cap_anchor if cap_anchor is not None else edit_plan.get("caption_anchor"),
+                          cta=edit_plan.get("cta"),
+                          captions_enabled=is_cap_on,
+                          fades=edit_plan.get("fades"), zoom_punch=edit_plan.get("zoom_punch", False),
                           zoom_events=edit_plan.get("zoom_events") or None,
                           popin_events=edit_plan.get("popin_events") or None,
                           whip_times=(trans.get("times") or None
-                                      if trans.get("kind") == "whip" else None))
+                                      if trans.get("kind") == "whip" else None),
+                          position=cap_position)
     else:
         if cap_text and cap_text.strip():
             raw_words = cap_text.strip().split()
@@ -255,6 +259,13 @@ def rerender_clip(job_dir: str | Path, clip_index: int, start: float,
         cap_kwargs = captions_mod.cta_from_cfg(cfg)
         if cap_anchor is not None:
             cap_kwargs["anchor"] = float(cap_anchor)
+        if cap_position:
+            cap_kwargs["position"] = cap_position
+        if captions_enabled is False:
+            cap_kwargs["captions_enabled"] = False
+
+    if preset == "none" or captions_enabled is False:
+        cap_kwargs["captions_enabled"] = False
 
     _prog(0.7, "burning captions")
     final = captions_mod.caption_clip(src, words, clip_dir / "final.mp4", cfg,

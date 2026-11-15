@@ -166,6 +166,7 @@ class RunRequest(BaseModel):
     generate_captions: bool = True    # whether to burn captions
     generate_metadata: bool = True    # whether to generate AI titles/tags
     caption_language: str = "hinglish" # "hinglish" | "hindi" | "english"
+    caption_position: str = "bottom"  # "bottom" | "center" | "top"
     # per-run style & branding (config.apply_run_options keys)
     cta_text: str = ""
     highlight_hex: str = ""
@@ -233,12 +234,14 @@ def _build_cfg(req: RunRequest, preset_opts: dict | None = None) -> dict:
     if not req.face_tracking:
         cfg.setdefault("reframe", {})["tracking"] = False
         cfg["reframe"]["face_tracking"] = False
-    if not req.generate_captions:
+    if not req.generate_captions or req.preset == "none":
         cfg.setdefault("captions", {})["enabled"] = False
     if not req.generate_metadata:
         cfg.setdefault("metadata", {})["enabled"] = False
     if req.caption_language:
         cfg.setdefault("captions", {})["language"] = req.caption_language.lower()
+    if req.caption_position:
+        cfg.setdefault("captions", {})["position"] = req.caption_position.lower()
     return cfg
 
 

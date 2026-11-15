@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from config import ROOT, config_hash, file_hash, load_config
@@ -25,6 +26,9 @@ log = get_logger("transcribe")
 
 _SENT_END = re.compile(r"[.!?…]['\")\]]*$")
 MAX_SENTENCE_SECONDS = 30.0
+
+_model_cache: dict[tuple[str, str, str], Any] = {}
+_transcribe_lock = threading.RLock()
 
 
 def _register_cuda_dll_dirs() -> None:
@@ -105,16 +109,34 @@ def _spans_key(spans: list[tuple] | None) -> str:
     return "spans_" + hashlib.sha256(blob).hexdigest()[:12]
 
 
-def _build_model(cfg: dict):
+def _build_model(cfg: dict, device_override: str | None = None,
+                 compute_override: str | None = None,
+                 model_override: str | None = None):
     model_name, device, compute = model_config(cfg)
-    log.info("whisper device=%s compute=%s model=%s", device, compute, model_name)
-    if device == "cuda":
-        _register_cuda_dll_dirs()
-    from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device=device, compute_type=compute,
-                         cpu_threads=(os.cpu_count() or 4),
-                         download_root=str(ROOT / cfg["whisper"]["model_dir"]))
-    return model, model_name, device, compute
+    if device_override:
+        device = device_override
+    if compute_override:
+        compute = compute_override
+    if model_override:
+        model_name = model_override
+
+    cache_key = (model_name, device, compute)
+    with _transcribe_lock:
+        if cache_key in _model_cache:
+            log.debug("reusing cached whisper model %s", cache_key)
+            return _model_cache[cache_key], model_name, device, compute
+
+        log.info("whisper device=%s compute=%s model=%s (loading fresh)", device, compute, model_name)
+        if device == "cuda":
+            _register_cuda_dll_dirs()
+        from faster_whisper import WhisperModel
+        # Cap CPU threads reasonably (max 4) to prevent CPU starvation on Windows
+        threads = min(4, os.cpu_count() or 4) if device == "cpu" else (os.cpu_count() or 4)
+        model = WhisperModel(model_name, device=device, compute_type=compute,
+                             cpu_threads=threads,
+                             download_root=str(ROOT / cfg["whisper"]["model_dir"]))
+        _model_cache[cache_key] = model
+        return model, model_name, device, compute
 
 
 def _run_whisper(model, path: str | Path, cfg: dict, progress_cb=None,
@@ -178,7 +200,10 @@ def _transcribe_spans(model, audio_path: Path, spans: list[tuple], cfg: dict,
 def transcribe(audio_path: str | Path, cfg: dict | None = None,
                spans: list[tuple] | None = None,
                debug_dir: str | Path | None = None,
-               progress_cb=None) -> dict:
+               progress_cb=None,
+               device_override: str | None = None,
+               compute_override: str | None = None,
+               model_override: str | None = None) -> dict:
     """Returns Transcript dict (schema-validated). `progress_cb(frac)` gets
     live 0..1 progress. When `spans` is given, only those (start, end) regions
     are transcribed (segment-first); otherwise the whole audio is transcribed."""
@@ -188,9 +213,14 @@ def transcribe(audio_path: str | Path, cfg: dict | None = None,
         raise TranscribeError(f"audio not found: {audio_path}")
 
     model_name, device, _ = model_config(cfg)
+    if device_override:
+        device = device_override
+    if model_override:
+        model_name = model_override
+
     cache_dir = ROOT / cfg["paths"]["cache_dir"] / "transcripts"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    key = (f"{file_hash(audio_path)[:24]}_{model_name}_"
+    key = (f"{file_hash(audio_path)[:24]}_{model_name}_{device}_"
            f"{config_hash(cfg, 'whisper')}_{_spans_key(spans)}")
     cache_file = cache_dir / f"{key}.json"
     if cache_file.exists():
@@ -204,7 +234,11 @@ def transcribe(audio_path: str | Path, cfg: dict | None = None,
     log.info("whisper %s on %s (beam=%d, %s)", model_name, device, beam,
              f"{len(spans)} spans" if spans else "whole video")
     try:
-        model, _, _, _ = _build_model(cfg)
+        model, _, _, _ = _build_model(
+            cfg, device_override=device_override,
+            compute_override=compute_override,
+            model_override=model_override
+        )
         if spans:
             words, sentences, language = _transcribe_spans(
                 model, audio_path, spans, cfg, progress_cb)
@@ -222,6 +256,47 @@ def transcribe(audio_path: str | Path, cfg: dict | None = None,
         raise
     except Exception as e:  # noqa: BLE001
         raise TranscribeError("faster-whisper failed", detail=str(e)[:500]) from e
+
+    data = {
+        "text": " ".join(w["word"] for w in words),
+        "language": language,
+        "duration": duration,
+        "words": words,
+        "sentences": sentences,
+    }
+    validate(data, "transcript")
+    cache_file.write_text(json.dumps(data), encoding="utf-8")
+    log.info("transcribed: %d words, %d sentences, lang=%s",
+             len(words), len(sentences), language)
+    _write_debug(data, debug_dir)
+    return data
+
+
+def repair_clip_transcription(audio_path: str | Path, start_s: float, end_s: float,
+                              cfg: dict | None = None,
+                              prefer_cpu: bool = True) -> list[dict]:
+    """On-demand missing word-timing repair executed safely during AI preparation.
+    Uses CPU int8 by default to avoid VRAM collisions with Qwen or NVENC.
+    """
+    cfg = cfg or load_config()
+    dur = max(0.1, end_s - start_s)
+    t_cfg = cfg.get("transcription", {})
+    fallback_dev = t_cfg.get("fallback_device", "cpu") if prefer_cpu else "auto"
+    fallback_compute = t_cfg.get("fallback_compute_type", "int8") if prefer_cpu else None
+
+    # Use CPU small or configured model for fast lightweight repair
+    model_name = cfg.get("whisper", {}).get("cpu", {}).get("model", "small") if fallback_dev == "cpu" else None
+
+    with _transcribe_lock:
+        res = transcribe(
+            audio_path=audio_path,
+            cfg=cfg,
+            spans=[(start_s, end_s)],
+            device_override=fallback_dev if fallback_dev != "auto" else None,
+            compute_override=fallback_compute,
+            model_override=model_name
+        )
+    return res.get("words", [])
 
     data = {
         "text": " ".join(w["word"] for w in words),

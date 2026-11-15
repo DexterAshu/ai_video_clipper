@@ -71,19 +71,35 @@ def run_ffmpeg(args: list[str], timeout: int = 1800,
     instead of hung."""
     cmd = [ffmpeg_bin(), "-y", "-v", "error"] + [str(a) for a in args]
     log.info("ffmpeg %s", " ".join(cmd[3:6]) + (" ..." if len(cmd) > 6 else ""))
+
     try:
+        import resource_coordinator
+
+        track_ctx = resource_coordinator.coordinator.track_ffmpeg()
+    except Exception:
+        track_ctx = None
+
+    def _exec():
         if progress_label:
             _run_with_progress(cmd, timeout, progress_label)
             return
         r = subprocess.run(cmd, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout)
+        if r.returncode != 0:
+            raise FFmpegError(
+                f"ffmpeg exited {r.returncode}", detail=(r.stderr or "")[-1000:]
+            )
+
+    try:
+        if track_ctx:
+            with track_ctx:
+                _exec()
+        else:
+            _exec()
     except subprocess.TimeoutExpired as e:
         raise FFmpegError(f"ffmpeg timed out after {timeout}s") from e
     except FileNotFoundError as e:
         raise FFmpegError("ffmpeg not found on PATH") from e
-    if r.returncode != 0:
-        raise FFmpegError(f"ffmpeg exited {r.returncode}",
-                          detail=(r.stderr or "")[-1000:])
 
 
 def _run_with_progress(cmd: list[str], timeout: int, label: str) -> None:

@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -26,6 +27,9 @@ log = get_logger("llm_manager")
 DEFAULT_PRIMARY_MODEL = "qwen3.5:4b"
 DEFAULT_FALLBACK_MODEL = "llama3.2:3b"
 ADVANCED_COMPARISON_MODEL = "qwen3.5:9b"
+
+_llm_request_lock = threading.RLock()
+_model_load_lock = threading.RLock()
 
 MODEL_CATALOG = {
     "qwen3.5:4b": {
@@ -242,6 +246,49 @@ def unload_model(model_name: str | None = None, base_url: str | None = None) -> 
         return False
 
 
+def wait_for_unload(
+    model_name: str | None = None, base_url: str | None = None, timeout_s: float = 10.0
+) -> bool:
+    """Unload model(s) and poll /api/ps until GPU VRAM is confirmed freed."""
+    base = base_url or get_ollama_base_url()
+    target = model_name or get_active_model()
+    t0 = time.perf_counter()
+
+    unload_model(target, base_url=base)
+    try:
+        fb = get_fallback_model()
+        if fb and fb != target:
+            unload_model(fb, base_url=base)
+    except Exception:
+        pass
+
+    deadline = t0 + max(1.0, timeout_s)
+    freed = False
+    while time.perf_counter() < deadline:
+        running = get_running_models(base_url=base)
+        target_running = any(
+            target in m.get("name", "") or (fb and fb in m.get("name", ""))
+            for m in running
+        )
+        if not target_running:
+            freed = True
+            break
+        time.sleep(0.3)
+
+    elapsed = round(time.perf_counter() - t0, 2)
+    if freed:
+        log.info(
+            "verified model '%s' evicted from GPU memory in %.2fs", target, elapsed
+        )
+    else:
+        log.warning(
+            "model '%s' eviction verification timed out after %.2fs — continuing",
+            target,
+            elapsed,
+        )
+    return freed
+
+
 def get_running_models(base_url: str | None = None) -> list[dict[str, Any]]:
     """Query /api/ps to inspect active models in memory, their VRAM footprint, and processor."""
     import requests
@@ -294,7 +341,7 @@ def query_ollama(
     base = get_ollama_base_url(cfg)
     chosen_model = model or get_active_model(cfg)
     fallback_model = get_fallback_model(cfg)
-    
+
     # Bound context window to 8192 tokens by default to keep VRAM strictly <= 3.7GB
     opt = {
         "num_ctx": int(cfg.get("llm", {}).get("context_length", 8192)),
@@ -335,46 +382,70 @@ def query_ollama(
     if images_b64:
         payload["images"] = images_b64
 
-    # Try primary model
+    # Try primary model with serialized inference lock
     t0 = time.perf_counter()
-    try:
-        log.info("querying Ollama model='%s' (ctx=%d, images=%d)...",
-                 chosen_model, opt["num_ctx"], len(images_b64))
-        r = requests.post(f"{base}/api/generate", json=payload, timeout=timeout)
-        if r.status_code == 200:
-            res_data = r.json()
-            raw_resp = res_data.get("response", "")
-            cleaned = strip_reasoning_tags(raw_resp)
-            eval_cnt = res_data.get("eval_count", 0)
-            elapsed = time.perf_counter() - t0
-            log.info("ollama model='%s' finished in %.2fs (%d tokens, ~%.1f tok/s)",
-                     chosen_model, elapsed, eval_cnt, eval_cnt / elapsed if elapsed > 0 else 0)
-            return cleaned
-        raise LLMError(f"ollama HTTP {r.status_code}", detail=r.text[:300])
-    except Exception as primary_err:
-        if not enable_fallback or chosen_model == fallback_model:
-            raise LLMError(f"ollama call failed on '{chosen_model}'", detail=str(primary_err)) from primary_err
-        
-        # Fallback to designated fallback model (llama3.2:3b)
-        log.warning("primary model '%s' failed: %s — falling back to '%s'",
-                    chosen_model, primary_err, fallback_model)
-        payload["model"] = fallback_model
-        if images_b64:
-            # Fallback model may not support vision; omit images to avoid hard failure
-            payload.pop("images", None)
-            log.info("omitted images for fallback model '%s'", fallback_model)
-            
-        t_fb = time.perf_counter()
+    with _llm_request_lock:
         try:
-            r_fb = requests.post(f"{base}/api/generate", json=payload, timeout=timeout)
-            if r_fb.status_code == 200:
-                res_data = r_fb.json()
-                cleaned = strip_reasoning_tags(res_data.get("response", ""))
-                log.info("fallback model '%s' succeeded in %.2fs",
-                         fallback_model, time.perf_counter() - t_fb)
+            log.info(
+                "querying Ollama model='%s' (ctx=%d, images=%d)...",
+                chosen_model,
+                opt["num_ctx"],
+                len(images_b64),
+            )
+            r = requests.post(f"{base}/api/generate", json=payload, timeout=timeout)
+            if r.status_code == 200:
+                res_data = r.json()
+                raw_resp = res_data.get("response", "")
+                cleaned = strip_reasoning_tags(raw_resp)
+                eval_cnt = res_data.get("eval_count", 0)
+                elapsed = time.perf_counter() - t0
+                log.info(
+                    "ollama model='%s' finished in %.2fs (%d tokens, ~%.1f tok/s)",
+                    chosen_model,
+                    elapsed,
+                    eval_cnt,
+                    eval_cnt / elapsed if elapsed > 0 else 0,
+                )
                 return cleaned
-            raise LLMError(f"fallback ollama HTTP {r_fb.status_code}", detail=r_fb.text[:300])
-        except Exception as fb_err:
-            raise LLMError(f"both primary '{chosen_model}' and fallback '{fallback_model}' failed",
-                           detail=f"primary: {primary_err}; fallback: {fb_err}") from fb_err
+            raise LLMError(f"ollama HTTP {r.status_code}", detail=r.text[:300])
+        except Exception as primary_err:
+            if not enable_fallback or chosen_model == fallback_model:
+                raise LLMError(
+                    f"ollama call failed on '{chosen_model}'", detail=str(primary_err)
+                ) from primary_err
 
+            # Fallback to designated fallback model (llama3.2:3b)
+            log.warning(
+                "primary model '%s' failed: %s — falling back to '%s'",
+                chosen_model,
+                primary_err,
+                fallback_model,
+            )
+            payload["model"] = fallback_model
+            if images_b64:
+                # Fallback model may not support vision; omit images to avoid hard failure
+                payload.pop("images", None)
+                log.info("omitted images for fallback model '%s'", fallback_model)
+
+            t_fb = time.perf_counter()
+            try:
+                r_fb = requests.post(
+                    f"{base}/api/generate", json=payload, timeout=timeout
+                )
+                if r_fb.status_code == 200:
+                    res_data = r_fb.json()
+                    cleaned = strip_reasoning_tags(res_data.get("response", ""))
+                    log.info(
+                        "fallback model '%s' succeeded in %.2fs",
+                        fallback_model,
+                        time.perf_counter() - t_fb,
+                    )
+                    return cleaned
+                raise LLMError(
+                    f"fallback ollama HTTP {r_fb.status_code}", detail=r_fb.text[:300]
+                )
+            except Exception as fb_err:
+                raise LLMError(
+                    f"both primary '{chosen_model}' and fallback '{fallback_model}' failed",
+                    detail=f"primary: {primary_err}; fallback: {fb_err}",
+                ) from fb_err

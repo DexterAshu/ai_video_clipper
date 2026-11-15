@@ -184,8 +184,9 @@ def _has_devanagari(words: list[dict]) -> bool:
 
 def write_ass(words: list[dict], ass_path: Path, cfg: dict, preset_name: str,
               play_w: int = 1080, play_h: int = 1920,
-              anchor: float | None = None, cta: dict | None = None,
-              clip_duration: float | None = None) -> None:
+              anchor: float | str | None = None, cta: dict | None = None,
+              clip_duration: float | None = None,
+              position: str | None = None) -> None:
     ccfg = cfg["captions"]
     preset = ccfg["presets"][preset_name]
     family, bold = _font(preset["font"])
@@ -195,13 +196,22 @@ def write_ass(words: list[dict], ass_path: Path, cfg: dict, preset_name: str,
     scale = int(preset.get("highlight_scale", 100))
     style_kind = preset.get("style", "karaoke")
 
-    # Position law: when an anchor is given, every line's CENTER is pinned via
-    # \an5\pos at anchor*height (clamped to the band). anchor=None keeps the
-    # legacy bottom-margin behaviour byte-for-byte.
+    # Determine vertical caption placement (Top / Center / Bottom / Custom anchor)
     cx = play_w // 2
-    pos_tag = ""
-    if anchor is not None:
-        pos_tag = rf"{{\an5\pos({cx},{int(_clamp_anchor(anchor) * play_h)})}}"
+    pos_y = None
+    pos_mode = (position or (anchor if isinstance(anchor, str) else None) or "").strip().lower()
+
+    if pos_mode in ("top", "center", "bottom"):
+        if pos_mode == "top":
+            pos_y = int(0.20 * play_h)
+        elif pos_mode == "center":
+            pos_y = int(0.50 * play_h)
+        elif pos_mode == "bottom":
+            pos_y = int(0.78 * play_h)
+    elif isinstance(anchor, (int, float)):
+        pos_y = int(_clamp_anchor(float(anchor)) * play_h)
+
+    pos_tag = rf"{{\an5\pos({cx},{pos_y})}}" if pos_y is not None else ""
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -250,15 +260,20 @@ Style: Base,{family},{preset['font_size']},{preset['primary_color']},{preset['hi
             events.append((start, end, " ".join(parts)))
 
     # CTA overlay: styled per active preset, positioned per the law, shown in
-    # the final cta.duration_s. Nudged just above the caption anchor so it does
-    # not sit on top of a trailing caption line.
+    # the final cta.duration_s. Nudged above or below the caption anchor.
     if cta and cta.get("enabled") and clip_duration:
         dur_cta = float(cta.get("duration_s", 1.5))
         c_start = max(0.0, clip_duration - dur_cta)
         text = _esc(cta.get("text", "Follow for more"))
         if preset.get("uppercase"):
             text = text.upper()
-        if anchor is not None:
+        if pos_y is not None:
+            if pos_y <= int(0.35 * play_h):
+                cta_y = pos_y + 130
+            else:
+                cta_y = max(int(0.10 * play_h), pos_y - 130)
+            cta_tag = rf"{{\an5\pos({cx},{cta_y})\b1}}"
+        elif anchor is not None and isinstance(anchor, (int, float)):
             cta_y = int(_clamp_anchor(anchor - 0.08) * play_h)
             cta_tag = rf"{{\an5\pos({cx},{cta_y})\b1}}"
         else:
@@ -299,12 +314,13 @@ def cta_from_cfg(cfg: dict) -> dict:
 def caption_clip(video_path: str | Path, words: list[dict],
                  out_path: str | Path, cfg: dict | None = None,
                  preset_name: str | None = None,
-                 anchor: float | None = None, cta: dict | None = None,
+                 anchor: float | str | None = None, cta: dict | None = None,
                  captions_enabled: bool = True, fades: dict | None = None,
                  zoom_punch: bool = False,
                  zoom_events: list[dict] | None = None,
                  popin_events: list[dict] | None = None,
-                 whip_times: list[float] | None = None) -> Path:
+                 whip_times: list[float] | None = None,
+                 position: str | None = None) -> Path:
     """Burn animated captions onto a clip; also writes .ass and .srt next to
     the output. `words` must already be clip-relative. Empty words → video is
     passed through re-encoded (mechanical runs) and an empty .srt is written.
@@ -361,7 +377,8 @@ def caption_clip(video_path: str | Path, words: list[dict],
     if burn:
         write_ass(words, ass_path, cfg, preset_name,
                   play_w=info["width"], play_h=info["height"],
-                  anchor=anchor, cta=cta, clip_duration=dur)
+                  anchor=anchor, cta=cta, clip_duration=dur,
+                  position=position)
         import fontreg
         fontsdir = fontreg.fonts_dir(cfg)       # bundled dir, or combined w/ user fonts
         vf_parts.append(f"subtitles=filename='{filter_path(ass_path)}'"
