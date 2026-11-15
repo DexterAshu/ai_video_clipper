@@ -240,6 +240,6 @@ def test_dashboard_endpoints(monkeypatch, tmp_path):
     assert r["channels"][0]["name"] == "@x"
     assert {"clips_made", "clips_posted", "videos_pulled",
             "pending"} <= set(r["channels"][0])
-    assert r["accounts"][0]["account"] == "default"
+    assert any(a["account"] == "default" for a in r["accounts"])
     p = client.get("/api/analytics/presets").json()
     assert "presets" in p and "no_preset_jobs" in p

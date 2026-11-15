@@ -321,6 +321,18 @@ def strip_reasoning_tags(text: str) -> str:
     return cleaned.strip()
 
 
+TASK_NUM_PREDICT = {
+    "clip_score": 120,
+    "hook_classify": 80,
+    "ending_classify": 80,
+    "niche": 60,
+    "clip_metadata": 350,
+    "virality": 350,
+    "highlight_candidates": 800,
+    "caption_transliterate": 1000,
+}
+
+
 def query_ollama(
     prompt: str,
     schema: dict | None = None,
@@ -342,9 +354,13 @@ def query_ollama(
     chosen_model = model or get_active_model(cfg)
     fallback_model = get_fallback_model(cfg)
 
-    # Bound context window to 8192 tokens by default to keep VRAM strictly <= 3.7GB
+    task_name = kwargs.get("task", "")
+    default_pred = TASK_NUM_PREDICT.get(task_name, int(cfg.get("llm", {}).get("max_tokens", 500)))
+
+    # Bound context window and token predictions to keep VRAM strictly <= 3.7GB and prevent runaways
     opt = {
         "num_ctx": int(cfg.get("llm", {}).get("context_length", 8192)),
+        "num_predict": default_pred,
         "temperature": float(cfg.get("llm", {}).get("temperature", 0.3)),
         "top_p": float(cfg.get("llm", {}).get("top_p", 0.9)),
     }
@@ -378,7 +394,8 @@ def query_ollama(
     if system:
         payload["system"] = system
     if schema:
-        payload["format"] = schema
+        # Enforce json formatting to activate grammar-guided JSON mode
+        payload["format"] = "json" if isinstance(schema, dict) else schema
     if images_b64:
         payload["images"] = images_b64
 
@@ -399,6 +416,11 @@ def query_ollama(
                 cleaned = strip_reasoning_tags(raw_resp)
                 eval_cnt = res_data.get("eval_count", 0)
                 elapsed = time.perf_counter() - t0
+                if not cleaned.strip():
+                    done_r = res_data.get("done_reason", "unknown")
+                    raise LLMError(
+                        f"ollama model '{chosen_model}' returned empty response (done_reason={done_r}, eval_count={eval_cnt})"
+                    )
                 log.info(
                     "ollama model='%s' finished in %.2fs (%d tokens, ~%.1f tok/s)",
                     chosen_model,
@@ -421,20 +443,26 @@ def query_ollama(
                 primary_err,
                 fallback_model,
             )
-            payload["model"] = fallback_model
+            fallback_payload = dict(payload)
+            fallback_payload["model"] = fallback_model
             if images_b64:
                 # Fallback model may not support vision; omit images to avoid hard failure
-                payload.pop("images", None)
+                fallback_payload.pop("images", None)
                 log.info("omitted images for fallback model '%s'", fallback_model)
 
             t_fb = time.perf_counter()
             try:
                 r_fb = requests.post(
-                    f"{base}/api/generate", json=payload, timeout=timeout
+                    f"{base}/api/generate", json=fallback_payload, timeout=timeout
                 )
                 if r_fb.status_code == 200:
                     res_data = r_fb.json()
                     cleaned = strip_reasoning_tags(res_data.get("response", ""))
+                    if not cleaned.strip():
+                        done_r = res_data.get("done_reason", "unknown")
+                        raise LLMError(
+                            f"fallback model '{fallback_model}' returned empty response (done_reason={done_r})"
+                        )
                     log.info(
                         "fallback model '%s' succeeded in %.2fs",
                         fallback_model,

@@ -29,26 +29,27 @@ def safe_job_path(job_name: str, *parts: str) -> Path:
     """Resolve a path under output/ and refuse anything that escapes it."""
     base = base_output_dir().resolve()
     curr = output_root()
+    effective_base = curr if not curr.is_relative_to(base) else base
     # 1. Check current scoped workspace path
     target = (curr / job_name).resolve()
-    if not (target.exists() and target.is_relative_to(base)):
+    if not (target.exists() and target.is_relative_to(effective_base)):
         # 2. Check default workspace path
         target = (base / job_name).resolve()
-        if not (target.exists() and target.is_relative_to(base)):
+        if not (target.exists() and target.is_relative_to(effective_base)):
             # 3. Search across all workspace subfolders in output/_workspaces/*
             ws_root = (base / WORKSPACES_SUBDIR).resolve()
             found = False
             if ws_root.is_dir():
                 for ws_dir in ws_root.iterdir():
                     candidate = (ws_dir / job_name).resolve()
-                    if ws_dir.is_dir() and candidate.exists() and candidate.is_relative_to(base):
+                    if ws_dir.is_dir() and candidate.exists() and candidate.is_relative_to(effective_base):
                         target = candidate
                         found = True
                         break
             if not found:
                 target = (curr / job_name).resolve()
     p = target.joinpath(*parts).resolve()
-    if not p.is_relative_to(base):
+    if not p.is_relative_to(effective_base):
         raise HTTPException(404, "File not found.")
     return p
 

@@ -313,20 +313,23 @@ def run_job(source: str, cfg: dict | None = None, provider: str | None = None,
 
         # Phase A: Dedicated sequential AI preparation phase (metadata, virality, niche, timing repair)
         # Prevents concurrent LLM requests and GPU VRAM competition.
-        prepared_ai = _prepare_clip_ai_sequentially(
-            candidates=candidates,
-            info=info,
-            transcript=transcript,
-            scene_data=scene_data,
-            edit_plans=edit_plans,
-            events=events,
-            cfg=cfg,
-            provider=provider,
-            caption_language=cap_lang,
-            job_dir=job_dir,
-            metadata_mod=metadata_mod,
-            tracker=tracker
-        )
+        tracker.start("ai_prep", f"preparing AI metadata for {n} clips")
+        with stage_timer(log, "ai_prep", timings):
+            prepared_ai = _prepare_clip_ai_sequentially(
+                candidates=candidates,
+                info=info,
+                transcript=transcript,
+                scene_data=scene_data,
+                edit_plans=edit_plans,
+                events=events,
+                cfg=cfg,
+                provider=provider,
+                caption_language=cap_lang,
+                job_dir=job_dir,
+                metadata_mod=metadata_mod,
+                tracker=tracker
+            )
+        tracker.finish("ai_prep")
 
         # Phase B: Complete model eviction and verification before video render
         try:
@@ -549,14 +552,16 @@ def _render_one_impl(i, cand, info, transcript, scene_data, job_dir, cfg, provid
                         source=cut_path, clip_start=0.0, clip_end=cut_dur,
                         out_path=clip_dir / "reframed.mp4", cfg=cfg,
                         transcript=transcript, framing_mode=framing_mode,
-                        cached_plan_path=plan_file
+                        cached_plan_path=plan_file,
+                        bottom_exclusion_ratio=excl
                     )
                 else:
                     metrics = director.direct_and_render_clip(
                         source=source, clip_start=out_start, clip_end=out_end,
                         out_path=clip_dir / "reframed.mp4", cfg=cfg,
                         transcript=transcript, framing_mode=framing_mode,
-                        cached_plan_path=plan_file
+                        cached_plan_path=plan_file,
+                        bottom_exclusion_ratio=excl
                     )
                 source_for_captions = clip_dir / "reframed.mp4"
                 director_succeeded = True
@@ -817,6 +822,8 @@ def _render_one_impl(i, cand, info, transcript, scene_data, job_dir, cfg, provid
             "niche": payload["niche"],
             "events": clip_events,
             "style": payload.get("style"),
+            "words": words,
+            "text": clip_text,
             "preset": preset or cfg["captions"]["preset"], "aspect": aspect}
 
 
@@ -935,13 +942,16 @@ def _prepare_clip_ai_sequentially(candidates: list[dict],
                      for w in transcript.get("words", [])
                      if w["start"] >= out_start - 0.05 and w["end"] <= out_end + 0.05]
 
-        # Fix C: Sequential missing word-timing repair on CPU (int8) before rendering
-        if not words and cfg.get("captions", {}).get("enabled", True):
+        # Fix C: Sequential missing/incomplete word-timing repair on CPU (int8) before rendering
+        needs_repair = (not words) or (len(words) < 5 and duration >= 10.0) or (
+            bool(words) and (words[-1]["end"] - words[0]["start"] < 0.4 * duration) and duration >= 15.0
+        )
+        if needs_repair:
             try:
                 repaired = transcribe_mod.repair_clip_transcription(
                     info["audio_path"], out_start, out_end, cfg, prefer_cpu=True
                 )
-                if repaired:
+                if repaired and len(repaired) > len(words):
                     words = [{"word": w["word"],
                               "start": round(max(0.0, w["start"] - out_start), 3),
                               "end": round(max(0.0, w["end"] - out_start), 3)}

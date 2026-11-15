@@ -61,8 +61,9 @@ def complete_json(task: str, schema_name: str, prompt: str,
     cfg = cfg or load_config()
     schema = SCHEMAS[schema_name]
     name = resolve_provider(cfg, provider)
-    retries = int(cfg["llm"].get("max_retries", 2))
-    backoff = float(cfg["llm"].get("backoff_base_seconds", 1.5))
+    llm_cfg = cfg.get("llm", {}) if isinstance(cfg, dict) else {}
+    retries = int(llm_cfg.get("max_retries", 2))
+    backoff = float(llm_cfg.get("backoff_base_seconds", 1.5))
 
     t0 = time.perf_counter()
     last_err: Exception | None = None
@@ -113,7 +114,9 @@ def _dispatch(name, task, schema, prompt, context, cfg, media=None):
             raise LLMError("groq does not support media input")
         return _groq_complete(schema, prompt, cfg)
     if name == "ollama":
-        return _ollama_complete(schema, prompt, cfg, media=media)
+        if media:
+            raise LLMError("ollama does not support media input")
+        return _ollama_complete(schema, prompt, cfg, media=media, task=task)
     if name == "openrouter":
         return _openrouter_complete(schema, prompt, cfg, media)
     raise LLMError(f"unknown provider {name}")
@@ -283,13 +286,14 @@ def _openrouter_complete(schema, prompt, cfg, media=None):
     return body["choices"][0]["message"]["content"]
 
 
-def _ollama_complete(schema, prompt, cfg, media=None):
+def _ollama_complete(schema, prompt, cfg, media=None, task=None):
     import llm_manager
     return llm_manager.query_ollama(
         prompt=prompt,
         schema=_strip_unsupported(schema),
         media=media,
-        cfg=cfg
+        cfg=cfg,
+        task=task
     )
 
 
@@ -408,7 +412,13 @@ def synthesize_from_schema(schema: dict, seed: str = "x"):
 # ------------------------------------------------------------- JSON helpers
 
 def _parse_json(text: str) -> dict:
-    data = json.loads(text)
+    if not isinstance(text, str):
+        raise ValueError("Expected string input for JSON parsing")
+    try:
+        data = json.loads(text)
+    except Exception:
+        repaired = repair_json(text)
+        data = json.loads(repaired)
     if not isinstance(data, dict):
         raise ValueError("LLM returned JSON that is not an object")
     return data
@@ -417,6 +427,9 @@ def _parse_json(text: str) -> dict:
 def repair_json(text: str) -> str:
     """Best-effort cleanup of near-JSON LLM output."""
     t = text.strip()
+    # Strip reasoning tags <think>...</think>
+    t = re.sub(r"<think>.*?</think>", "", t, flags=re.DOTALL).strip()
+    # Strip markdown code fences
     t = re.sub(r"^```(?:json)?\s*", "", t)
     t = re.sub(r"\s*```$", "", t)
     start, end = t.find("{"), t.rfind("}")

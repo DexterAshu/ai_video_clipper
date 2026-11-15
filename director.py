@@ -240,7 +240,8 @@ def render_director_clip(source: Path,
                          out_path: Path,
                          cfg: dict | None = None,
                          ow: int = 1080,
-                         oh: int = 1920) -> dict:
+                         oh: int = 1920,
+                         bottom_exclusion_ratio: float = 0.0) -> dict:
     """Render a multi-layout clip using FFmpeg with pixel-faithful composition,
     independent panel tracking, and clean transitions."""
     cfg = cfg or load_config()
@@ -260,8 +261,9 @@ def render_director_clip(source: Path,
         target_cy = segments[0].target_a.get("cy", sh / 2.0) or (sh / 2.0)
         cw = max(2, min(sw, int(sh * 9 / 16) & ~1))
         ch = max(2, min(sh, int(cw * 16 / 9) & ~1))
+        usable_sh = sh * (1.0 - max(0.0, min(0.5, bottom_exclusion_ratio)))
         top_x = max(0.0, min(sw - cw, target_cx - cw / 2.0))
-        top_y = max(0.0, min(sh - ch, target_cy - ch / 2.0))
+        top_y = max(0.0, min(max(0.0, usable_sh - ch), target_cy - ch / 2.0))
         vf = f"crop={cw}:{ch}:{top_x:.1f}:{top_y:.1f},scale={ow}:{oh}:flags=lanczos,setsar=1"
         args = ["-ss", f"{clip_start:.3f}", "-i", source, "-t", f"{dur:.3f}",
                 "-vf", vf] + video_encode_args(cfg) + audio_args + [
@@ -333,8 +335,9 @@ def direct_and_render_clip(source: Path | str,
                            manual_zoom: float = 1.0,
                            crop_x_offset: float = 0.0,
                            crop_y_offset: float = 0.0,
-                           ow: int = 1080,
-                           oh: int = 1920) -> dict:
+                           ow: int | None = None,
+                           oh: int | None = None,
+                           bottom_exclusion_ratio: float = 0.0) -> dict:
     """High-level unified pipeline and studio entrypoint for Dynamic AI Director:
     1. Validates framing_mode (rejects unsupported modes with clear error).
     2. Reuses cached layout plan when available or plans dynamically.
@@ -345,6 +348,11 @@ def direct_and_render_clip(source: Path | str,
     import reframe
 
     cfg = cfg or load_config()
+    rcfg_out = cfg.get("reframe", {}).get("output", {})
+    if ow is None:
+        ow = int(rcfg_out.get("width", 1080))
+    if oh is None:
+        oh = int(rcfg_out.get("height", 1920))
     source, out_path = Path(source), Path(out_path)
     dur = max(0.1, clip_end - clip_start)
 
@@ -425,7 +433,7 @@ def direct_and_render_clip(source: Path | str,
             except Exception as e:
                 log.debug("could not save director_plan.json: %s", e)
 
-    metrics = render_director_clip(source, clip_start, clip_end, segments, out_path, cfg, ow=ow, oh=oh)
+    metrics = render_director_clip(source, clip_start, clip_end, segments, out_path, cfg, ow=ow, oh=oh, bottom_exclusion_ratio=bottom_exclusion_ratio)
     metrics["framing_mode"] = framing_mode
     return metrics
 

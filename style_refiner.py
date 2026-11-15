@@ -189,8 +189,8 @@ def compress_pauses(words: list[dict], s0: float, e0: float, cfg: dict):
     """
     scfg = cfg["style"]
     clips = cfg["clips"]
-    max_pause = float(scfg["max_pause_s"])
-    target = min(0.5, max(0.25, float(scfg["target_pause_s"])))
+    max_pause = float(scfg.get("max_pause_s", 0.7))
+    target = min(0.5, max(0.25, float(scfg.get("target_pause_s", 0.35))))
     min_seconds = float(clips["min_seconds"])
     span = max(0.0, e0 - s0)
 
@@ -508,10 +508,15 @@ def refine_clip(candidate: dict, transcript: dict, scenes: dict, subs: dict,
 
     # --- ENDING OPTIMIZER ---
     win = _words_in(words, s0, e0)
-    tail = float(scfg["tail_ms"]) / 1000.0
+    tail = float(scfg.get("tail_ms", 300)) / 1000.0
     if win:
         last_end = win[-1]["end"]
-        trimmed_e = min(e0, last_end + tail)
+        # CRITICAL DURATION GUARD: Never trim the ending such that (trimmed_e - s0) < min_s!
+        cand_dur = e0 - s0
+        if cand_dur >= min_s:
+            trimmed_e = min(e0, max(s0 + min_s, last_end + tail))
+        else:
+            trimmed_e = e0
         if trimmed_e < e0 - 0.01:
             ending_action = "trim_tail"
         e0 = trimmed_e
@@ -577,6 +582,20 @@ def refine_clip(candidate: dict, transcript: dict, scenes: dict, subs: dict,
     subs_block, subs_kept, captions_enabled = decide_existing_subs(subs, cfg, subs_mode)
     if subs_kept:
         flags.append("subs_kept")
+
+    # --- FINAL DURATION ENFORCEMENT ---
+    if output_duration < min_s:
+        orig_s, orig_e = candidate.get("start", s0), candidate.get("end", e0)
+        orig_dur = round(orig_e - orig_s, 3)
+        if orig_dur >= min_s:
+            log.warning("refined output duration %.2fs below min_seconds %.1fs — restoring safe original bounds %.2f-%.2f",
+                        output_duration, min_s, orig_s, orig_e)
+            segments = [[orig_s, orig_e]]
+            out_words = _words_in(words, orig_s, orig_e)
+            output_duration = orig_dur
+            flags.append("duration_guard_restored")
+            start_action = "keep"
+            ending_action = "keep"
 
     # --- assemble ---
     unresolved = "unresolved_ending" in flags

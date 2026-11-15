@@ -299,8 +299,21 @@ def select_highlights(transcript: dict, scenes: dict, duration: float,
     if events:
         # Fusion runs AFTER sentence snapping (snapping would undo the
         # reaction-boundary extension) and before dedupe.
+        cluster_cands = event_cluster_candidates(events, duration, cfg)
         if mechanical or _is_sparse(transcript, duration, cfg):
-            snapped += event_cluster_candidates(events, duration, cfg)
+            snapped += cluster_cands
+        else:
+            # Even in speech-dense transcripts, include high-intensity event clusters (>= 6.0)
+            # so viral events (laughter bursts, energy spikes) outside speech shortlists are never starved.
+            min_cluster_intensity = float(cfg.get("viral_v2", {}).get("min_event_cluster_intensity", 6.0))
+            strong_clusters = [
+                c for c in cluster_cands
+                if any(
+                    e.get("intensity_1_10", 0) >= min_cluster_intensity
+                    for e in _events_in_span(events, c["start"], c["end"])
+                )
+            ]
+            snapped += strong_clusters
         snapped = fuse_event_scores(snapped, events, cfg)
         snapped = apply_reaction_boundaries(snapped, events, cfg, duration)
 
@@ -343,64 +356,255 @@ def _llm_or_fallback(windows, cfg, provider, min_s, max_s, max_n, debug_dir):
         return rule_based_candidates(windows, cfg)
 
 
-# ------------------------------------------------------------- re-scoring
+# ------------------------------------------------------------- re-scoring & ranking engine
+
+def _get_clip_text(clip: dict, transcript: dict) -> str:
+    """Resolve spoken text for a clip using the most accurate available source."""
+    # 1. Direct text on clip record
+    if clip.get("text") and str(clip["text"]).strip():
+        return str(clip["text"]).strip()
+
+    # 2. Words list on clip record
+    if clip.get("words"):
+        words_str = " ".join(w["word"] for w in clip["words"] if isinstance(w, dict) and "word" in w)
+        if words_str.strip():
+            return words_str.strip()
+
+    # 3. Read words from prepared_ai.json cache if clip directory exists
+    clip_path = clip.get("path")
+    if clip_path:
+        clip_dir = Path(clip_path).parent
+        prep_file = clip_dir / "prepared_ai.json"
+        if prep_file.exists():
+            try:
+                p_data = json.loads(prep_file.read_text(encoding="utf-8"))
+                p_words = p_data.get("words", [])
+                words_str = " ".join(w["word"] for w in p_words if isinstance(w, dict) and "word" in w)
+                if words_str.strip():
+                    return words_str.strip()
+            except Exception:
+                pass
+
+    # 4. Extract from burned subtitles (.srt)
+    srt_path = clip.get("srt")
+    if srt_path and Path(srt_path).exists():
+        try:
+            srt_lines = [
+                line.strip() for line in Path(srt_path).read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().isdigit() and "-->" not in line
+            ]
+            if srt_lines:
+                return " ".join(srt_lines).strip()
+        except Exception:
+            pass
+
+    # 5. Fallback: slice from master transcript
+    sliced = _slice_text(transcript, clip.get("start", 0.0), clip.get("end", 0.0))
+    if sliced.strip():
+        return sliced.strip()
+
+    # 6. Final fallback: hook or metadata title/description
+    meta = clip.get("metadata") or {}
+    return str(meta.get("description") or clip.get("hook") or "").strip()
+
+
+def _safe_num(val: Any, default: float = 5.0, min_v: float = 0.0, max_v: float = 10.0) -> float:
+    try:
+        if val is None:
+            return default
+        v = float(val)
+        if math.isnan(v):
+            return default
+        if math.isinf(v):
+            return max_v if v > 0 else min_v
+        return min(max_v, max(min_v, v))
+    except (TypeError, ValueError):
+        return default
+
 
 def rescore_clips(clips: list[dict], transcript: dict,
                   cfg: dict | None = None, provider: str | None = None,
                   target_count: int | None = None) -> list[dict]:
-    """Score each rendered clip 1–10 on four axes, compute the weighted score,
-    then decide which are kept. With `target_count`, keep exactly that many
-    (or all available, fewer, with a note); otherwise keep the top keep_ratio
-    but never fewer than min_keep. Adds 'scores'/'weighted_score'/'kept' to each
-    clip dict; returns clips desc."""
+    """Audit, validate eligibility, score, and rank each rendered clip.
+    Enforces minimum duration, playable output, deterministic tie-breaking,
+    and structured rejection reasons.
+    """
     cfg = cfg or load_config()
     weights = cfg["clips"]["rescore_weights"]
-    for clip in clips:
-        text = _slice_text(transcript, clip["start"], clip["end"])
-        prompt = (
-            "TASK: Rate this short-form clip transcript 1-10 on each axis.\n"
-            "AXES: hook_strength (first 3 seconds), retention potential, "
-            "clarity out of context, emotional/informational impact.\n"
-            "CONSTRAINTS: numbers 1-10, JSON only.\n"
-            "OUTPUT SCHEMA: {\"hook_strength\": n, \"retention\": n, "
-            "\"clarity\": n, \"impact\": n}\n"
-            f"CLIP ({clip['end'] - clip['start']:.0f}s): {text[:1500]}")
-        try:
-            scores = llm.complete_json("clip_score", "clip_score", prompt,
-                                       provider=provider,
-                                       context={"text": text}, cfg=cfg)
-        except LLMError as e:
-            log.warning("rescore failed for clip %.1f (%s) — neutral fallback",
-                        clip["start"], e)
-            scores = {k: 5.0 for k in ("hook_strength", "retention",
-                                       "clarity", "impact")}
-        clip["scores"] = scores
-        clip["weighted_score"] = round(
-            sum(scores[k] * weights[k] for k in weights), 3)
+    min_seconds = float(cfg["clips"].get("min_seconds", 10.0))
 
-    clips.sort(key=lambda c: -c["weighted_score"])
-    n = len(clips)
-    if target_count:
-        keep = min(int(target_count), n)
-        for i, c in enumerate(clips):
-            c["kept"] = i < keep
-        if n < target_count:
-            log.info("requested %d clips but only %d available — keeping all %d",
-                     target_count, n, n)
+    # Phase 1: Candidate Eligibility Audit
+    for clip in clips:
+        dur = float(clip.get("duration") or max(0.0, clip.get("end", 0.0) - clip.get("start", 0.0)))
+        rejection_reasons: list[str] = []
+        is_eligible = True
+
+        # Duration gate (hard reject under min_seconds)
+        if dur < min_seconds:
+            is_eligible = False
+            rejection_reasons.append(f"duration_below_minimum: {dur:.2f}s < {min_seconds:.1f}s")
+
+        # Media output integrity gate (if path is specified, it must exist and be valid)
+        if "path" in clip:
+            clip_path = clip.get("path")
+            if not clip_path or not Path(clip_path).exists():
+                is_eligible = False
+                rejection_reasons.append("rendered_output_file_missing")
+            elif Path(clip_path).stat().st_size < 1000:
+                is_eligible = False
+                rejection_reasons.append("rendered_output_file_empty_or_corrupted")
+
+        clip["eligible"] = is_eligible
+        clip["rejection_reasons"] = rejection_reasons
+        clip["duration"] = round(dur, 3)
+
+    # Phase 2: AI Scoring for Eligible Candidates
+    for clip in clips:
+        text = _get_clip_text(clip, transcript)
+        clip["resolved_text"] = text
+
+        # Determine transcript status
+        if not text.strip():
+            transcript_status = "missing"
+        elif clip.get("words"):
+            transcript_status = "recovered"
         else:
-            log.info("clip-count selector: kept exactly %d of %d clips",
-                     keep, n)
-        return clips
-    keep = max(min(cfg["clips"]["min_keep"], n),
-               math.ceil(n * cfg["clips"]["keep_ratio"]))
-    for i, c in enumerate(clips):
-        c["kept"] = i < keep
-    if n <= cfg["clips"]["min_keep"]:
-        log.info("only %d candidates existed — keeping all (min-keep rule)", n)
+            transcript_status = "complete"
+        clip["transcript_status"] = transcript_status
+
+        # Composite normalization: incorporate virality and candidate signals safely
+        vir_obj = clip.get("virality") or {}
+        vir_raw = _safe_num(vir_obj.get("score"), default=50.0, min_v=0.0, max_v=100.0)
+        vir_norm = round(min(10.0, max(1.0, vir_raw / 10.0)), 3)
+
+        cand_raw = _safe_num(clip.get("candidate_score"), default=5.0, min_v=0.0, max_v=100.0)
+        cand_norm = round(cand_raw / 10.0, 3) if cand_raw > 10.0 else round(cand_raw, 3)
+        cand_norm = min(10.0, max(0.0, cand_norm))
+
+        if not clip["eligible"]:
+            clip["scores"] = {"hook_strength": 0.0, "retention": 0.0, "clarity": 0.0, "impact": 0.0}
+            clip["weighted_score"] = 0.0
+            clip["assessment_status"] = "not_assessed"
+            clip["normalized_components"] = {"llm": 0.0, "virality": 0.0, "candidate": 0.0}
+            log.info("clip %02d [INELIGIBLE]: %s", clip["index"], ", ".join(clip["rejection_reasons"]))
+            continue
+
+        if transcript_status == "missing":
+            clip["scores"] = {"hook_strength": 1.0, "retention": 1.0, "clarity": 1.0, "impact": 1.0}
+            clip["assessment_status"] = "not_assessed"
+            llm_score = 1.0
+            clip["rejection_reasons"].append("empty_transcript")
+        else:
+            prompt = (
+                "TASK: Rate this short-form clip transcript 1-10 on each axis.\n"
+                "AXES: hook_strength (first 3 seconds), retention potential, "
+                "clarity out of context, emotional/informational impact.\n"
+                "CONSTRAINTS: numbers 1-10, JSON only.\n"
+                "OUTPUT SCHEMA: {\"hook_strength\": n, \"retention\": n, "
+                "\"clarity\": n, \"impact\": n}\n"
+                f"CLIP ({clip['duration']:.0f}s): {text[:1500]}")
+            try:
+                raw_scores = llm.complete_json("clip_score", "clip_score", prompt,
+                                               provider=provider,
+                                               context={"text": text}, cfg=cfg)
+                clean_scores = {k: _safe_num(raw_scores.get(k), default=5.0, min_v=1.0, max_v=10.0) for k in weights}
+                clip["scores"] = clean_scores
+                llm_score = sum(clean_scores[k] * weights[k] for k in weights)
+                clip["assessment_status"] = "completed"
+            except LLMError as e:
+                log.warning("rescore failed for clip %02d (%s) — transparent fallback",
+                            clip["index"], e)
+                fb_val = min(7.0, max(2.0, round(0.6 * cand_norm + 0.4 * vir_norm, 2)))
+                clip["scores"] = {k: fb_val for k in ("hook_strength", "retention", "clarity", "impact")}
+                llm_score = fb_val
+                clip["assessment_status"] = "fallback"
+
+        composite_score = round(0.60 * llm_score + 0.25 * vir_norm + 0.15 * cand_norm, 3)
+        clip["weighted_score"] = composite_score
+        clip["normalized_components"] = {
+            "llm": round(llm_score, 3),
+            "virality": vir_norm,
+            "candidate": cand_norm
+        }
+
+    # Phase 3: Deterministic Multi-Tier Ranking & Selection
+    eligible_clips = [c for c in clips if c["eligible"]]
+    ineligible_clips = [c for c in clips if not c["eligible"]]
+
+    def _ranking_key(c: dict):
+        vir_s = _safe_num((c.get("virality") or {}).get("score"), default=0.0, min_v=0.0, max_v=100.0)
+        cand_s = _safe_num(c.get("candidate_score"), default=0.0, min_v=0.0, max_v=100.0)
+        return (
+            _safe_num(c.get("weighted_score"), default=0.0, min_v=0.0, max_v=10.0),
+            vir_s,
+            cand_s,
+            -abs(float(c.get("duration", 30.0)) - 35.0),  # Sweet-spot proximity
+            -int(c.get("index", 0))                      # Stable tie-break
+        )
+
+    eligible_clips.sort(key=_ranking_key, reverse=True)
+
+    n_eligible = len(eligible_clips)
+    if target_count:
+        keep_target = min(int(target_count), n_eligible)
     else:
-        log.info("rescore: kept %d of %d clips (dropped bottom %d)",
-                 keep, n, n - keep)
-    return clips
+        keep_target = max(min(cfg["clips"]["min_keep"], n_eligible),
+                          math.ceil(n_eligible * cfg["clips"]["keep_ratio"]))
+
+    for rank_idx, c in enumerate(eligible_clips):
+        c["rank"] = rank_idx + 1
+        c["kept"] = rank_idx < keep_target
+        if not c["kept"]:
+            c["rejection_reasons"].append(f"dropped_by_quota: rank {c['rank']} exceeds target {keep_target}")
+
+        verdict = "selected" if c["kept"] else f"dropped_by_quota: rank {c['rank']} exceeds target {keep_target}"
+        c["ranking"] = {
+            "candidate_id": c["index"],
+            "original_start": c.get("original_source_start_s", c.get("start")),
+            "original_end": c.get("original_source_end_s", c.get("end")),
+            "start": c.get("start"),
+            "end": c.get("end"),
+            "duration": c.get("duration"),
+            "eligible": True,
+            "rejection_reasons": c["rejection_reasons"],
+            "transcript_status": c.get("transcript_status", "complete"),
+            "assessment_status": c.get("assessment_status", "completed"),
+            "breakdown": c["scores"],
+            "normalized_components": c.get("normalized_components", {}),
+            "composite_score": c["weighted_score"],
+            "rank": c["rank"],
+            "kept": c["kept"],
+            "verdict_reason": verdict,
+        }
+        log.info("clip %02d [RANK %d | score=%.2f | kept=%s]: %s",
+                 c["index"], c["rank"], c["weighted_score"], c["kept"], c.get("hook", ""))
+
+    for c in ineligible_clips:
+        c["rank"] = None
+        c["kept"] = False
+        c["ranking"] = {
+            "candidate_id": c["index"],
+            "original_start": c.get("original_source_start_s", c.get("start")),
+            "original_end": c.get("original_source_end_s", c.get("end")),
+            "start": c.get("start"),
+            "end": c.get("end"),
+            "duration": c.get("duration"),
+            "eligible": False,
+            "rejection_reasons": c["rejection_reasons"],
+            "transcript_status": c.get("transcript_status", "missing"),
+            "assessment_status": "not_assessed",
+            "breakdown": c.get("scores", {}),
+            "normalized_components": {"llm": 0.0, "virality": 0.0, "candidate": 0.0},
+            "composite_score": 0.0,
+            "rank": None,
+            "kept": False,
+            "verdict_reason": f"ineligible: {', '.join(c['rejection_reasons'])}",
+        }
+
+    log.info("rescore: kept %d of %d eligible clips (%d ineligible rejected)",
+             keep_target, n_eligible, len(ineligible_clips))
+
+    return eligible_clips + ineligible_clips
 
 
 def _slice_text(transcript: dict, start: float, end: float) -> str:

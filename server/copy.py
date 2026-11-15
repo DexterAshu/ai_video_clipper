@@ -22,6 +22,7 @@ STAGE_LABELS: dict[str, str] = {
     "scenes": "Finding scene changes",
     "highlights": "Finding the best moments",
     "refine": "Polishing clip timing",
+    "ai_prep": "Preparing clip metadata",
     "render": "Making your clips",
     "rescore": "Ranking your clips",
     "cleanup": "Tidying up",

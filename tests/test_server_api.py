@@ -600,7 +600,7 @@ def test_all_clips_lists_every_status(client, monkeypatch, tmp_path):
                    "virality": {"score": 10}}],
     }), encoding="utf-8")
 
-    clips = client.get("/api/clips/all").json()["clips"]
+    clips = client.get("/api/clips/all?include_sample=1").json()["clips"]
     by_title = {c["title"]: c for c in clips}
     assert by_title["Pending clip"]["status"] == "pending"
     assert by_title["Rejected clip"]["status"] == "rejected"
